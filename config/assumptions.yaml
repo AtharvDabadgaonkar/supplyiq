@@ -1,0 +1,255 @@
+# ============================================================================
+# SupplyIQ — assumptions registry
+#
+# EVERY number in this file is an input the app does NOT learn from data.
+# If a value is used anywhere in supplyiq/ it must be read from here, never
+# hard-coded. Anything under `simulated: true` is labelled "simulated" in the
+# UI and the README.
+# ============================================================================
+
+meta:
+  version: 1
+  currency: USD
+  # Planning calendar. All planning is weekly; raw M5 is daily and is
+  # aggregated to weeks ending Saturday to match the M5 week definition.
+  period: week
+  # M5 retail weeks (wm_yr_wk) run Saturday -> Friday. We keep that definition
+  # so the weekly aggregation matches Walmart's own calendar exactly.
+  week_starts_on: SAT
+
+# ---------------------------------------------------------------------------
+# Data provenance. `scripts/ingest.py` writes the realised provenance to
+# data/sample/provenance.json; this block records what each source is FOR.
+# ---------------------------------------------------------------------------
+data_sources:
+  demand:
+    name: M5 Forecasting - Accuracy (Walmart unit sales)
+    kaggle: competitions/m5-forecasting-accuracy
+    simulated: false
+    provides: [sku, category, department, store, state, week, units_sold, sell_price]
+    licence: Kaggle competition rules — raw files are NOT redistributed in this repo
+  orders:
+    name: DataCo Smart Supply Chain
+    kaggle: datasets/shashwatwork/dataco-smart-supply-chain-for-big-data-analysis
+    simulated: false
+    provides: [order_id, order_date, ship_date, shipping_mode, days_for_shipping_real,
+               days_for_shipping_scheduled, late_delivery_risk, customer_region, order_profit]
+    licence: Kaggle dataset licence — raw files are NOT redistributed in this repo
+
+# ---------------------------------------------------------------------------
+# Sample scope. Keeps the committed Parquet small and the app fast.
+# ---------------------------------------------------------------------------
+sample:
+  state: CA                       # one M5 state
+  categories: [FOODS, HOUSEHOLD, HOBBIES]
+  n_items: 100                    # distinct M5 item_ids
+  n_stores: 4                     # CA stores; gives two or more locations so the
+                                  # "rebalance stock" action has somewhere to move it
+  n_planning_items: 400           # n_items * n_stores — one row per (sku, store)
+  n_weeks: 200                    # ~3.8 years of weekly history
+  holdout_weeks: 12               # time-based test window, never used in training
+  forecast_horizon_weeks: 12
+  random_seed: 20260419           # fixes the synthetic fallback + all simulated draws
+  # Anchor for the SYNTHETIC fallback only, so repeated builds are byte-identical.
+  # The real M5 path takes its dates from calendar.csv instead.
+  synthetic_last_week_start: 2026-10-31   # a Saturday, matching week_starts_on
+
+# ---------------------------------------------------------------------------
+# SIMULATED: suppliers. DataCo has shipping performance but no supplier master,
+# so a supplier network is simulated on top of it and SKUs are assigned to it.
+# ---------------------------------------------------------------------------
+suppliers:
+  simulated: true
+  rationale: >
+    DataCo provides realised shipping lead times and late-delivery risk but no
+    supplier/vendor dimension and no purchase lead times. We simulate a supplier
+    master whose lead-time distributions are calibrated to the DataCo shipping
+    spread, so supplier behaviour is plausible rather than invented at random.
+  # Lead time in DAYS, drawn per purchase order from a lognormal fitted to
+  # (mean_lead_time_days, lead_time_sd_days).
+  network:
+    - supplier_id: SUP-CN-01
+      name: Shenzhen Consolidated Goods
+      country: CN
+      mean_lead_time_days: 42
+      lead_time_sd_days: 9.0
+      otif_target: 0.88
+      unit_cost_index: 0.82      # multiplier on the M5 sell_price-derived unit cost
+      moq_units: 500
+      order_multiple_units: 100
+    - supplier_id: SUP-CN-02
+      name: Ningbo Household Works
+      country: CN
+      mean_lead_time_days: 38
+      lead_time_sd_days: 11.0
+      otif_target: 0.84
+      unit_cost_index: 0.80
+      moq_units: 400
+      order_multiple_units: 50
+    - supplier_id: SUP-VN-01
+      name: Hai Phong Light Manufacturing
+      country: VN
+      mean_lead_time_days: 35
+      lead_time_sd_days: 7.5
+      otif_target: 0.91
+      unit_cost_index: 0.86
+      moq_units: 300
+      order_multiple_units: 50
+    - supplier_id: SUP-VN-02
+      name: Da Nang Packaged Foods
+      country: VN
+      mean_lead_time_days: 30
+      lead_time_sd_days: 6.0
+      otif_target: 0.93
+      unit_cost_index: 0.88
+      moq_units: 250
+      order_multiple_units: 50
+    - supplier_id: SUP-MX-01
+      name: Monterrey Nearshore Foods
+      country: MX
+      mean_lead_time_days: 14
+      lead_time_sd_days: 3.5
+      otif_target: 0.95
+      unit_cost_index: 0.97
+      moq_units: 100
+      order_multiple_units: 25
+    - supplier_id: SUP-MX-02
+      name: Guadalajara Home Supply
+      country: MX
+      mean_lead_time_days: 16
+      lead_time_sd_days: 4.0
+      otif_target: 0.94
+      unit_cost_index: 0.95
+      moq_units: 150
+      order_multiple_units: 25
+    - supplier_id: SUP-US-01
+      name: Central Valley Packing
+      country: US
+      mean_lead_time_days: 7
+      lead_time_sd_days: 1.8
+      otif_target: 0.97
+      unit_cost_index: 1.10
+      moq_units: 50
+      order_multiple_units: 10
+    - supplier_id: SUP-US-02
+      name: Inland Empire Distribution
+      country: US
+      mean_lead_time_days: 9
+      lead_time_sd_days: 2.5
+      otif_target: 0.96
+      unit_cost_index: 1.06
+      moq_units: 50
+      order_multiple_units: 10
+  # Share of SKUs assigned to each supplier, by category. Rows must sum to 1.0.
+  sku_allocation:
+    FOODS:     {SUP-MX-01: 0.25, SUP-VN-02: 0.25, SUP-US-01: 0.30, SUP-MX-02: 0.20}
+    HOUSEHOLD: {SUP-CN-02: 0.35, SUP-VN-01: 0.25, SUP-MX-02: 0.20, SUP-US-02: 0.20}
+    HOBBIES:   {SUP-CN-01: 0.45, SUP-VN-01: 0.25, SUP-CN-02: 0.15, SUP-US-02: 0.15}
+  # Second source available for dual-sourcing recommendations (ACT module).
+  alternate_source:
+    SUP-CN-01: SUP-VN-01
+    SUP-CN-02: SUP-VN-01
+    SUP-VN-01: SUP-MX-02
+    SUP-VN-02: SUP-MX-01
+    SUP-MX-01: SUP-US-01
+    SUP-MX-02: SUP-US-02
+    SUP-US-01: SUP-MX-01
+    SUP-US-02: SUP-MX-02
+
+# ---------------------------------------------------------------------------
+# SIMULATED: cost model. M5 gives sell_price (real); unit cost, freight and
+# tariffs are simulated to build a landed cost.
+#   landed_cost_per_unit = unit_cost + freight_per_unit + tariff
+#   tariff              = unit_cost * tariff_rate(country)
+# ---------------------------------------------------------------------------
+costs:
+  simulated: true
+  rationale: >
+    M5 sell_price is real. Cost of goods, freight and duty are not in either
+    dataset, so unit cost is derived as sell_price * (1 - gross_margin_target)
+    * supplier.unit_cost_index, and freight/tariff come from the tables below.
+  gross_margin_target: 0.32       # retail gross margin used to back out unit cost
+  freight_per_unit_by_country:    # USD per unit, ocean/truck blended
+    CN: 0.95
+    VN: 0.88
+    MX: 0.35
+    US: 0.12
+  tariff_rate_by_country:         # ad-valorem duty on unit cost, baseline scenario
+    CN: 0.25
+    VN: 0.07
+    MX: 0.00
+    US: 0.00
+  expedite:
+    # Air-freight upgrade used by the "expedite order" action (ACT module).
+    lead_time_multiplier: 0.35    # 42-day ocean -> ~15-day air
+    freight_multiplier: 4.5       # freight_per_unit x this
+  rebalance:
+    # Cost of moving stock between locations (ACT module).
+    cost_per_unit: 0.45
+    transit_days: 3
+  holding_cost_rate_annual: 0.22  # % of inventory value per year (capital + space + risk)
+  stockout_penalty_per_unit: 1.50 # lost-margin proxy charged per unit short
+  ordering_cost_per_po: 120.0     # fixed cost per purchase order, used by EOQ
+
+# ---------------------------------------------------------------------------
+# Inventory policy settings (PLAN module).
+# ---------------------------------------------------------------------------
+policy:
+  service_level_target: 0.95      # default cycle service level
+  service_level_options: [0.90, 0.95, 0.975, 0.99]
+  review_period_weeks: 1          # periodic review, order up to ROP weekly
+  # ABC thresholds on cumulative share of revenue (Pareto).
+  abc_revenue_cutoffs: {A: 0.80, B: 0.95}
+  # XYZ thresholds on coefficient of variation of weekly demand.
+  xyz_cv_cutoffs: {X: 0.50, Y: 1.00}
+  # Service level differentiated by ABC class, used by the SupplyIQ policy in
+  # the backtest (the "current policy" baseline uses a flat weeks-of-cover rule).
+  service_level_by_abc: {A: 0.98, B: 0.95, C: 0.90}
+  min_safety_stock_units: 0
+  initial_stock_weeks_of_cover: 4 # opening inventory for the simulation
+
+# ---------------------------------------------------------------------------
+# Baseline ("current") policy the backtest compares against (MEASURE module).
+# ---------------------------------------------------------------------------
+baseline_policy:
+  description: >
+    What a planner without SupplyIQ typically does: forecast next week as last
+    week's sales (naive), hold a flat number of weeks of cover for every SKU
+    regardless of variability, and reorder when stock drops below it.
+  forecast: naive
+  weeks_of_cover: 4
+  flat_safety_stock_weeks: 1
+
+# ---------------------------------------------------------------------------
+# Scenario slider ranges (SIMULATE module). Defaults are the no-disruption case
+# and must reproduce the baseline exactly.
+# ---------------------------------------------------------------------------
+scenarios:
+  supplier_delay_days:   {default: 0,   min: 0,   max: 60,  step: 1}
+  demand_spike_pct:      {default: 0.0, min: -50.0, max: 100.0, step: 5.0}
+  tariff_change_pct:     {default: 0.0, min: -25.0, max: 50.0,  step: 1.0}
+
+# ---------------------------------------------------------------------------
+# Forecasting (SENSE module). Exactly two models: a baseline and one better.
+# ---------------------------------------------------------------------------
+forecast:
+  baseline_model: seasonal_naive  # last year's same week; falls back to naive
+  seasonal_period_weeks: 52
+  candidate_model: ets            # statsmodels ExponentialSmoothing
+  min_weeks_history: 52           # SKUs below this get the baseline only
+  # Guard for MAPE on intermittent demand: weeks with zero actuals are excluded
+  # from MAPE and reported via WAPE instead.
+  mape_exclude_zero_actuals: true
+
+# ---------------------------------------------------------------------------
+# AI planning agent (ACT module).
+# ---------------------------------------------------------------------------
+agent:
+  provider: auto                  # auto | mock | anthropic | openai
+  model: claude-opus-5
+  max_output_tokens: 400
+  temperature: 0.2
+  at_risk_top_n: 10
+  # The LLM only writes prose. Every number in a recommendation comes from a
+  # simulator re-run; this flag is asserted in tests.
+  llm_may_produce_numbers: false

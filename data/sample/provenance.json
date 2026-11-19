@@ -1,0 +1,31 @@
+{
+  "origin": "synthetic",
+  "built_at": "2026-11-19T18:39:12Z",
+  "demand_source": "synthetic generator (seeded)",
+  "orders_source": "synthetic generator (seeded)",
+  "simulated_sections": [
+    "costs",
+    "suppliers"
+  ],
+  "sample_scope": {
+    "state": "CA",
+    "categories": [
+      "FOODS",
+      "HOUSEHOLD",
+      "HOBBIES"
+    ],
+    "n_items": 100,
+    "n_stores": 4,
+    "n_planning_items": 400,
+    "n_weeks": 200,
+    "holdout_weeks": 12,
+    "random_seed": 20260419
+  },
+  "row_counts": {
+    "demand": 80000,
+    "sku_master": 400,
+    "suppliers": 8,
+    "purchase_orders": 29040
+  },
+  "notes": "No Kaggle files were present, so this sample is SYNTHETIC: a seeded generator shaped to look like M5 weekly demand (intermittent slow movers, annual seasonality, promotions) and a DataCo-like PO log. No field here is observed data. Drop the raw Kaggle files into data/raw/ and re-run `make ingest` to replace it with the real sample."
+}

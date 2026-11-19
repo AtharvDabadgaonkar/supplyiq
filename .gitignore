@@ -1,0 +1,24 @@
+# Raw Kaggle downloads are never committed (licence + size)
+data/raw/*
+!data/raw/.gitkeep
+
+# Secrets
+.streamlit/secrets.toml
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Build scratch
+.deploycheck/
+.duckdb/
+*.duckdb
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

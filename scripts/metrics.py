@@ -1,0 +1,174 @@
+#!/usr/bin/env python
+"""Recompute every reported number into reports/metrics.json.
+
+This file is the ONLY source for figures quoted in the README or the UI. If a
+number is not in here, it does not get reported.
+
+Phase 1 writes the data-provenance and supplier-performance facts. Each later
+phase adds its own block:
+    phase 2 -> forecast_accuracy, segmentation, inventory_policy
+    phase 3 -> scenarios
+    phase 4 -> agent, backtest
+"""
+from __future__ import annotations
+
+import json
+import platform
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from supplyiq import __version__, paths  # noqa: E402
+from supplyiq.config import load_assumptions  # noqa: E402
+from supplyiq.data import load_all, read_provenance, split_weeks, utc_now_iso  # noqa: E402
+
+
+def data_block(tables: dict[str, pd.DataFrame], a: dict) -> dict:
+    demand = tables["demand"]
+    last_train, first_test = split_weeks(demand, int(a["sample"]["holdout_weeks"]))
+    per_item = demand.groupby(["sku", "store"], observed=True)["units_sold"]
+    mean_wk = per_item.mean()
+    cv = (per_item.std() / mean_wk.replace(0, np.nan)).dropna()
+    return {
+        "planning_items": int(len(tables["sku_master"])),
+        "distinct_skus": int(demand["sku"].nunique()),
+        "stores": int(demand["store"].nunique()),
+        "suppliers": int(len(tables["suppliers"])),
+        "weeks_of_history": int(demand["week_index"].max()) + 1,
+        "week_start_first": str(demand["week_start"].min().date()),
+        "week_start_last": str(demand["week_start"].max().date()),
+        "train_weeks": [0, int(last_train)],
+        "holdout_weeks": [int(first_test), int(demand["week_index"].max())],
+        "demand_rows": int(len(demand)),
+        "purchase_order_rows": int(len(tables["purchase_orders"])),
+        "total_units_sold": int(demand["units_sold"].sum()),
+        "total_revenue": round(float(demand["revenue"].sum()), 2),
+        "zero_demand_week_share": round(float((demand["units_sold"] == 0).mean()), 4),
+        "median_weekly_units_per_item": round(float(mean_wk.median()), 2),
+        "demand_cv_median": round(float(cv.median()), 4),
+        "demand_cv_p90": round(float(cv.quantile(0.90)), 4),
+    }
+
+
+def supplier_block(tables: dict[str, pd.DataFrame]) -> dict:
+    po = tables["purchase_orders"].copy()
+    po["on_time"] = (po["late_delivery"] == 0).astype(int)
+    po["otif"] = ((po["late_delivery"] == 0) & (po["in_full"] == 1)).astype(int)
+    by_sup = (
+        po.groupby("supplier_id")
+        .agg(
+            pos=("po_id", "size"),
+            on_time_rate=("on_time", "mean"),
+            in_full_rate=("in_full", "mean"),
+            otif=("otif", "mean"),
+            late_delivery_rate=("late_delivery", "mean"),
+            lead_time_mean_days=("days_actual", "mean"),
+            lead_time_sd_days=("days_actual", "std"),
+            quoted_lead_time_days=("days_scheduled", "mean"),
+        )
+        .round(4)
+    )
+    sup = tables["suppliers"].set_index("supplier_id")
+    by_sup["country"] = sup["country"]
+    by_sup["otif_target"] = sup["otif_target"].round(4)
+    by_sup["otif_vs_target_pp"] = ((by_sup["otif"] - by_sup["otif_target"]) * 100).round(2)
+    return {
+        "overall_otif": round(float(po["otif"].mean()), 4),
+        "overall_on_time_rate": round(float(po["on_time"].mean()), 4),
+        "overall_late_delivery_rate": round(float(po["late_delivery"].mean()), 4),
+        "overall_in_full_rate": round(float(po["in_full"].mean()), 4),
+        "lead_time_mean_days": round(float(po["days_actual"].mean()), 2),
+        "max_abs_otif_error_vs_target_pp": round(
+            float(by_sup["otif_vs_target_pp"].abs().max()), 2
+        ),
+        "by_supplier": json.loads(by_sup.reset_index().to_json(orient="records")),
+    }
+
+
+def cost_block(tables: dict[str, pd.DataFrame], a: dict) -> dict:
+    sm = tables["sku_master"]
+    return {
+        "simulated": True,
+        "formula_unit_cost": "avg_sell_price * (1 - gross_margin_target) * supplier.unit_cost_index",
+        "formula_landed_cost": "unit_cost + freight_per_unit + unit_cost * tariff_rate",
+        "gross_margin_target": float(a["costs"]["gross_margin_target"]),
+        "mean_unit_cost": round(float(sm["unit_cost"].mean()), 4),
+        "mean_landed_cost": round(float(sm["landed_cost"].mean()), 4),
+        "mean_tariff_rate": round(float(sm["tariff_rate"].mean()), 4),
+        "landed_vs_unit_cost_uplift_pct": round(
+            float((sm["landed_cost"].sum() / sm["unit_cost"].sum() - 1) * 100), 2
+        ),
+        "items_exposed_to_tariff": int((sm["tariff_rate"] > 0).sum()),
+        "tariff_exposed_share": round(float((sm["tariff_rate"] > 0).mean()), 4),
+    }
+
+
+def main() -> int:
+    a = load_assumptions()
+    tables = load_all(check=True)
+    prov = read_provenance()
+
+    metrics = {
+        "_about": (
+            "Generated by `make metrics`. Every number reported in the README or the UI "
+            "comes from this file. Do not edit by hand."
+        ),
+        "generated_at": utc_now_iso(),
+        "supplyiq_version": __version__,
+        "python_version": platform.python_version(),
+        "phases_complete": [1],
+        "data_provenance": {
+            "origin": prov.origin,
+            "is_real_data": prov.is_real,
+            "label": prov.badge,
+            "demand_source": prov.demand_source,
+            "orders_source": prov.orders_source,
+            "simulated_sections": prov.simulated_sections,
+            "built_at": prov.built_at,
+            "notes": prov.notes,
+        },
+        "sample_scope": prov.sample_scope,
+        "data": data_block(tables, a),
+        "supplier_performance": supplier_block(tables),
+        "cost_model": cost_block(tables, a),
+        "agent": {
+            "provider_configured": str(a["agent"]["provider"]),
+            "llm_may_produce_numbers": bool(a["agent"]["llm_may_produce_numbers"]),
+            "note": (
+                "Explanations are prose only. Any number in generated text is checked "
+                "against the simulator's output by supplyiq.agent.guard; unverifiable "
+                "text is discarded in favour of the rule-based explanation."
+            ),
+        },
+        "pending_phases": {
+            "2": ["forecast_accuracy", "segmentation", "inventory_policy"],
+            "3": ["scenarios"],
+            "4": ["agent_recommendations", "backtest"],
+        },
+    }
+
+    paths.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    paths.METRICS_FILE.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+
+    print(f"wrote {paths.METRICS_FILE.relative_to(paths.REPO_ROOT)}")
+    print(f"  origin               {prov.origin}")
+    print(f"  planning items       {metrics['data']['planning_items']:,}")
+    print(f"  weeks of history     {metrics['data']['weeks_of_history']}")
+    print(f"  overall OTIF         {metrics['supplier_performance']['overall_otif']:.1%}")
+    print(f"  late delivery rate   {metrics['supplier_performance']['overall_late_delivery_rate']:.1%}")
+    print(f"  mean landed cost     ${metrics['cost_model']['mean_landed_cost']:.2f}")
+    print(f"  tariff-exposed items {metrics['cost_model']['tariff_exposed_share']:.1%}")
+
+    # Keep the README's metrics block in sync, so no figure is ever hand-typed.
+    from scripts.render_readme import main as render_readme  # noqa: PLC0415
+
+    render_readme()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

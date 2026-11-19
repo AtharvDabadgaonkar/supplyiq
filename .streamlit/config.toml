@@ -1,0 +1,16 @@
+[theme]
+base = "light"
+primaryColor = "#1f6feb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f5f9"
+textColor = "#17202a"
+font = "sans serif"
+
+[server]
+headless = true
+# enableCORS is left at its default (true): disabling it would let any origin
+# open a WebSocket to the app, and Streamlit warns about exactly that.
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
