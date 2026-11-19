@@ -27,6 +27,7 @@ REQUIRED_TOP_LEVEL = (
     "policy",
     "baseline_policy",
     "scenarios",
+    "simulation",
     "forecast",
     "agent",
 )
@@ -85,6 +86,13 @@ def _validate(a: dict[str, Any]) -> None:
         )
     if s["n_stores"] < 2:
         raise AssumptionsError("sample.n_stores must be >= 2 so stock rebalancing is possible")
+
+    if a["policy"]["initial_stock_policy"] not in ("order_up_to", "weeks_of_cover"):
+        raise AssumptionsError(
+            "policy.initial_stock_policy must be 'order_up_to' or 'weeks_of_cover'"
+        )
+    if a["simulation"]["unmet_demand"] != "lost_sales":
+        raise AssumptionsError("simulation.unmet_demand: only 'lost_sales' is implemented")
 
     # Scenario defaults must be the no-disruption case, so that the SIMULATE
     # module's "zero disruption reproduces baseline" guarantee holds.

@@ -7,8 +7,7 @@ number is not in here, it does not get reported.
 It also precomputes the planning artifacts into data/derived/ so the deployed
 app loads Parquet instead of refitting models on the free Cloud tier.
 
-Phases 1 and 2 are written. Each later phase adds its own block:
-    phase 3 -> scenarios
+Phases 1-3 are written. Each later phase adds its own block:
     phase 4 -> agent_recommendations, backtest
 """
 from __future__ import annotations
@@ -219,6 +218,64 @@ def inventory_block(planning, a: dict) -> dict:
     }
 
 
+def scenario_block(planning, a: dict) -> dict:
+    table = planning.scenario_table()
+    base = planning.baseline.kpis
+    rows = []
+    for row in table.to_dict(orient="records"):
+        rows.append(
+            {
+                "scenario": row["scenario"],
+                "description": row["description"],
+                "supplier_delay_days": row["supplier_delay_days"],
+                "demand_spike_pct": row["demand_spike_pct"],
+                "tariff_change_pct": row["tariff_change_pct"],
+                "scope": row["country_scope"] or row["supplier_scope"] or "all",
+                "fill_rate": round(row["fill_rate"], 5),
+                "stockout_weeks": int(row["stockout_weeks"]),
+                "items_with_a_stockout": int(row["items_with_a_stockout"]),
+                "otif": round(row["otif"], 5),
+                "working_capital": round(row["working_capital"], 2),
+                "landed_cost_per_unit": round(row["landed_cost_per_unit"], 4),
+                "cost_to_serve": round(row["cost_to_serve"], 2),
+                "fill_rate_vs_baseline_pp": round(row["delta_fill_rate"] * 100, 3),
+                "cost_to_serve_vs_baseline": round(row["delta_cost_to_serve"], 2),
+                "working_capital_vs_baseline": round(row["delta_working_capital"], 2),
+            }
+        )
+    worst = min(rows, key=lambda r: r["fill_rate"])
+    return {
+        "method": (
+            "Weekly inventory twin over the holdout weeks, lost sales, periodic (s,S) "
+            "review. Baseline and scenario runs share the same pre-drawn lead times "
+            "(common random numbers), so a difference between them is the scenario and "
+            "not simulation noise. Zero disruption reproduces the baseline exactly."
+        ),
+        "cost_to_serve_definition": (
+            "holding + stockout + ordering + action costs. The price of the goods is "
+            "excluded: over a finite window a supplier delay pushes reorders past the "
+            "end of it, so including goods made a disruption look cheaper than no "
+            "disruption."
+        ),
+        "tariff_units": "percentage points added to the ad-valorem rate, floored at zero",
+        "weeks_simulated": int(planning.baseline.kpis["weeks"]),
+        "baseline": {
+            "fill_rate": round(base["fill_rate"], 5),
+            "stockout_weeks": int(base["stockout_weeks"]),
+            "otif": round(base["otif"], 5),
+            "working_capital": round(base["working_capital"], 2),
+            "cost_to_serve": round(base["cost_to_serve"], 2),
+        },
+        "worst_case": {
+            "scenario": worst["scenario"],
+            "fill_rate": worst["fill_rate"],
+            "fill_rate_vs_baseline_pp": worst["fill_rate_vs_baseline_pp"],
+            "stockout_weeks": worst["stockout_weeks"],
+        },
+        "scenarios": rows,
+    }
+
+
 def main() -> int:
     a = load_assumptions()
     tables = load_all(check=True)
@@ -227,7 +284,7 @@ def main() -> int:
     print("building planning artifacts (fitting forecast models) ...")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        planning = build_planning(tables, a, with_evaluation=True)
+        planning = build_planning(tables, a, with_evaluation=True, with_scenarios=True)
     written = write_artifacts(planning)
     for name, path in written.items():
         print(f"  {name:22s} {path.stat().st_size / 1e6:6.2f} MB  {path.name}")
@@ -240,7 +297,7 @@ def main() -> int:
         "generated_at": utc_now_iso(),
         "supplyiq_version": __version__,
         "python_version": platform.python_version(),
-        "phases_complete": [1, 2],
+        "phases_complete": [1, 2, 3],
         "data_provenance": {
             "origin": prov.origin,
             "is_real_data": prov.is_real,
@@ -259,6 +316,7 @@ def main() -> int:
         "segmentation": segmentation_block(planning, a),
         "inventory_policy": inventory_block(planning, a),
         "supplier_service": planning.overall,
+        "scenarios": scenario_block(planning, a),
         "agent": {
             "provider_configured": str(a["agent"]["provider"]),
             "llm_may_produce_numbers": bool(a["agent"]["llm_may_produce_numbers"]),
@@ -269,7 +327,6 @@ def main() -> int:
             ),
         },
         "pending_phases": {
-            "3": ["scenarios"],
             "4": ["agent_recommendations", "backtest"],
         },
     }
@@ -293,6 +350,11 @@ def main() -> int:
     print(f"  inventory turns      {inv['portfolio_inventory_turns']:.1f}")
     print(f"  weighted fill rate   {inv['weighted_fill_rate']:.3%}")
     print(f"  lead-time SS uplift  {inv['leadtime_risk_uplift_pct']:.1f}%")
+    sc = metrics["scenarios"]
+    print(f"  baseline fill rate   {sc['baseline']['fill_rate']:.3%} "
+          f"({sc['baseline']['stockout_weeks']} stockout weeks)")
+    print(f"  worst scenario       {sc['worst_case']['scenario']} "
+          f"({sc['worst_case']['fill_rate_vs_baseline_pp']:+.2f} pp fill rate)")
 
     # Keep the README's metrics block in sync, so no figure is ever hand-typed.
     from scripts.render_readme import main as render_readme  # noqa: PLC0415

@@ -104,10 +104,31 @@ def render(m: dict) -> str:
             "long overseas lanes.",
         ]
 
+    sc = m.get("scenarios")
+    if sc:
+        lines += [
+            "",
+            f"**Disruption scenarios** — {sc['weeks_simulated']} simulated weeks, baseline vs. shock.",
+            "",
+            "| Scenario | Fill rate | Δ pp | Stockout weeks | OTIF | Working capital | Cost to serve |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for row in sc["scenarios"]:
+            delta = "—" if row["scenario"] == "baseline" else f"{row['fill_rate_vs_baseline_pp']:+.2f}"
+            lines.append(
+                f"| {row['description']} | {row['fill_rate']:.2%} | {delta} | "
+                f"{row['stockout_weeks']} | {row['otif']:.1%} | "
+                f"${row['working_capital']:,.0f} | ${row['cost_to_serve']:,.0f} |"
+            )
+        lines += [
+            "",
+            f"Cost to serve is {sc['cost_to_serve_definition'].split('.')[0].strip()}. "
+            f"Tariff changes are {sc['tariff_units']}.",
+        ]
+
     lines += [
         "",
-        f"_Phases complete: {phases} of 5. Scenario and backtest figures appear here as those "
-        "phases land._",
+        f"_Phases complete: {phases} of 5. Backtest figures appear here as that phase lands._",
         "",
         END,
     ]

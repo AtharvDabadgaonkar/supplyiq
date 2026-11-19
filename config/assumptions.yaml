@@ -217,7 +217,14 @@ policy:
   # instead: it is the lever that keeps weeks-of-supply and inventory turns in a
   # sane range. Binding here for most C items.
   max_weeks_of_supply: 8
-  initial_stock_weeks_of_cover: 4 # opening inventory for the simulation
+  # Opening inventory for the simulation.
+  #   order_up_to     start at the top of the cycle (ROP + order quantity), the
+  #                   steady state the policy itself implies. Default.
+  #   weeks_of_cover  start every item at a flat initial_stock_weeks_of_cover,
+  #                   regardless of policy. Used to show what a policy inherits
+  #                   rather than what it would have built.
+  initial_stock_policy: order_up_to
+  initial_stock_weeks_of_cover: 4
 
 # ---------------------------------------------------------------------------
 # Baseline ("current") policy the backtest compares against (MEASURE module).
@@ -236,9 +243,36 @@ baseline_policy:
 # and must reproduce the baseline exactly.
 # ---------------------------------------------------------------------------
 scenarios:
-  supplier_delay_days:   {default: 0,   min: 0,   max: 60,  step: 1}
+  # supplier_delay_days  ADDED to the drawn lead time, in days.
+  # demand_spike_pct     demand is multiplied by (1 + pct/100).
+  # tariff_change_pct    PERCENTAGE POINTS added to the ad-valorem tariff rate,
+  #                      floored at zero. +10 takes a 25% duty to 35%, not to
+  #                      27.5%. Stated here because the two readings differ a
+  #                      lot on a 25% base rate.
+  supplier_delay_days:   {default: 0,   min: 0,     max: 60,    step: 1}
   demand_spike_pct:      {default: 0.0, min: -50.0, max: 100.0, step: 5.0}
   tariff_change_pct:     {default: 0.0, min: -25.0, max: 50.0,  step: 1.0}
+
+# ---------------------------------------------------------------------------
+# Simulation engine (SIMULATE module).
+# ---------------------------------------------------------------------------
+simulation:
+  # Retail: unmet demand is lost, not backordered. Fill rate is therefore
+  # units shipped / units demanded, and a stockout week is any week with
+  # unmet demand.
+  unmet_demand: lost_sales
+  # Periodic review (s, S): when inventory position falls to or below the
+  # reorder point, order up to ROP + order_quantity, then apply MOQ and the
+  # order multiple.
+  replenishment: order_up_to
+  # Lead times are redrawn per order from each supplier's lognormal. Baseline
+  # and scenario runs share the SAME pre-drawn values (common random numbers),
+  # so a difference between them is the scenario and not simulation noise.
+  stochastic_lead_times: true
+  seed: 7312026
+  # Days -> whole weeks for arrival timing. An order placed in week w arrives
+  # at the start of week w + ceil(lead_days / 7).
+  round_lead_time: ceil
 
 # ---------------------------------------------------------------------------
 # Forecasting (SENSE module). Exactly two models: a baseline and one better.

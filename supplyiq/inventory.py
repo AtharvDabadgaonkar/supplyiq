@@ -227,13 +227,16 @@ def build_policy(
     df = stats.merge(
         item_lead_times[
             ITEM_KEYS + ["supplier_id", "lead_time_mean_weeks", "lead_time_sd_weeks",
-                         "unit_cost", "landed_cost", "avg_sell_price", "category"]
+                         "quoted_lead_time_days", "unit_cost", "freight_per_unit",
+                         "tariff_rate", "landed_cost", "avg_sell_price", "category"]
         ],
         on=ITEM_KEYS,
         how="left",
         validate="one_to_one",
     )
 
+    # Supplier constraints and country. Country is carried so a scenario can be
+    # scoped to a sourcing origin ("what if China goes to 35% duty").
     sup = (
         sku_master[["supplier_id"]].drop_duplicates().merge(
             _supplier_constraints(a), on="supplier_id", how="left"
@@ -320,8 +323,10 @@ def _supplier_constraints(a: dict[str, Any]) -> pd.DataFrame:
     rows = [
         {
             "supplier_id": s["supplier_id"],
+            "country": s["country"],
             "moq_units": float(s["moq_units"]),
             "order_multiple_units": float(s["order_multiple_units"]),
+            "alternate_supplier_id": a["suppliers"]["alternate_source"].get(s["supplier_id"]),
         }
         for s in a["suppliers"]["network"]
     ]

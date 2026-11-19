@@ -7,7 +7,7 @@ function, so what is tested is what ships.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from supplyiq.config import load_assumptions
 from supplyiq.data import load_all, train_test
 from supplyiq.forecast import Evaluation, demand_stats, evaluate, future_forecast
 from supplyiq.inventory import build_policy, segment
+from supplyiq.simulate import Scenario, SimulationResult, run_scenarios
 from supplyiq.suppliers import item_lead_times, overall_performance, supplier_performance
 
 ITEM_KEYS = ["sku", "store"]
@@ -30,7 +31,30 @@ ARTIFACTS = {
     "forecast_accuracy": "forecast_accuracy.parquet",
     "forecasts": "forecasts.parquet",
     "future_forecast": "future_forecast.parquet",
+    "scenario_summary": "scenario_summary.parquet",
+    "baseline_per_item": "baseline_per_item.parquet",
 }
+
+
+# The scenarios precomputed for the Control Tower. The sliders re-run the
+# simulator live -- it takes ~30ms for the whole panel -- so these exist to give
+# the overview page something to show on first load, not to limit the user.
+PRESET_SCENARIOS: tuple[dict[str, Any], ...] = (
+    {"name": "baseline"},
+    {"name": "supplier_delay_14d", "supplier_delay_days": 14},
+    {"name": "supplier_delay_30d", "supplier_delay_days": 30},
+    {"name": "demand_spike_25pct", "demand_spike_pct": 25.0},
+    {"name": "demand_spike_50pct", "demand_spike_pct": 50.0},
+    {"name": "tariff_cn_plus10pp", "tariff_change_pct": 10.0, "country_scope": ("CN",)},
+    {"name": "tariff_all_plus10pp", "tariff_change_pct": 10.0},
+    {
+        "name": "compound_shock",
+        "supplier_delay_days": 21,
+        "demand_spike_pct": 25.0,
+        "tariff_change_pct": 10.0,
+        "country_scope": ("CN",),
+    },
+)
 
 
 @dataclass
@@ -46,6 +70,26 @@ class Planning:
     policy: pd.DataFrame
     evaluation: Evaluation | None = None
     future: pd.DataFrame | None = None
+    scenarios: dict[str, SimulationResult] = field(default_factory=dict)
+
+    @property
+    def baseline(self) -> SimulationResult:
+        return self.scenarios["baseline"]
+
+    def scenario_table(self) -> pd.DataFrame:
+        """One row per scenario, with its KPIs and its deltas against baseline."""
+        if not self.scenarios:
+            return pd.DataFrame()
+        base = self.scenarios["baseline"]
+        rows = []
+        for name, result in self.scenarios.items():
+            row = {"scenario": name, "description": result.scenario.describe(),
+                   **result.scenario.as_dict(), **result.kpis}
+            row.pop("name", None)
+            for key, value in result.compare_to(base).items():
+                row[f"delta_{key}"] = value
+            rows.append(row)
+        return pd.DataFrame(rows)
 
 
 def item_revenue(train: pd.DataFrame, stats: pd.DataFrame) -> pd.Series:
@@ -57,11 +101,16 @@ def item_revenue(train: pd.DataFrame, stats: pd.DataFrame) -> pd.Series:
     return aligned["revenue"].fillna(0.0)
 
 
+def preset_scenarios() -> list[Scenario]:
+    return [Scenario(**spec) for spec in PRESET_SCENARIOS]
+
+
 def build(
     tables: dict[str, pd.DataFrame] | None = None,
     a: dict[str, Any] | None = None,
     with_evaluation: bool = True,
     service_level: float | None = None,
+    with_scenarios: bool = False,
 ) -> Planning:
     """Build segmentation, supplier performance and the inventory policy.
 
@@ -90,6 +139,10 @@ def build(
         else None
     )
 
+    scenarios = (
+        run_scenarios(policy, test, preset_scenarios(), a) if with_scenarios else {}
+    )
+
     return Planning(
         train=train,
         test=test,
@@ -100,6 +153,7 @@ def build(
         policy=policy,
         evaluation=evaluation,
         future=future,
+        scenarios=scenarios,
     )
 
 
@@ -129,6 +183,9 @@ def write_artifacts(planning: Planning, directory: Path | None = None) -> dict[s
         frames["forecasts"] = planning.evaluation.forecasts
     if planning.future is not None:
         frames["future_forecast"] = planning.future
+    if planning.scenarios:
+        frames["scenario_summary"] = planning.scenario_table()
+        frames["baseline_per_item"] = planning.baseline.per_item
 
     for name, df in frames.items():
         path = artifact_path(name, out_dir)

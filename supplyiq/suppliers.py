@@ -115,6 +115,7 @@ def item_lead_times(
         "lead_time_mean_weeks",
         "lead_time_sd_weeks",
         "lead_time_cv",
+        "quoted_lead_time_days",
         "otif",
         "on_time_rate",
         "late_delivery_rate",

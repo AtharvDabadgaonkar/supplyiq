@@ -59,8 +59,8 @@ def test_cost_model_states_its_formulas(metrics):
 
 
 def test_metrics_declare_which_phases_are_complete(metrics):
-    assert metrics["phases_complete"] == [1, 2]
-    assert set(metrics["pending_phases"]) == {"3", "4"}
+    assert metrics["phases_complete"] == [1, 2, 3]
+    assert set(metrics["pending_phases"]) == {"4"}
 
 
 # --------------------------------------------------------------------------- #
@@ -170,3 +170,62 @@ def test_readme_labels_the_data_origin(metrics):
 def test_readme_states_the_demo_mode_badge():
     readme = (REPO_ROOT / "README.md").read_text()
     assert "Demo mode: rule-based explanations" in readme
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 figures
+# --------------------------------------------------------------------------- #
+def test_scenario_metrics_include_a_baseline_and_shocks(metrics):
+    sc = metrics["scenarios"]
+    names = [row["scenario"] for row in sc["scenarios"]]
+    assert "baseline" in names
+    assert len(names) >= 4
+
+
+def test_baseline_scenario_has_zero_delta_against_itself(metrics):
+    sc = metrics["scenarios"]
+    baseline = next(r for r in sc["scenarios"] if r["scenario"] == "baseline")
+    assert baseline["fill_rate_vs_baseline_pp"] == 0
+    assert baseline["cost_to_serve_vs_baseline"] == 0
+    assert baseline["supplier_delay_days"] == 0
+    assert baseline["demand_spike_pct"] == 0
+    assert baseline["tariff_change_pct"] == 0
+
+
+def test_every_shock_degrades_service_or_raises_cost(metrics):
+    sc = metrics["scenarios"]
+    for row in sc["scenarios"]:
+        if row["scenario"] == "baseline":
+            continue
+        assert (
+            row["fill_rate_vs_baseline_pp"] <= 0 and row["cost_to_serve_vs_baseline"] > 0
+        ), row["scenario"]
+
+
+def test_supplier_delays_are_monotonic_in_the_reported_metrics(metrics):
+    rows = {r["scenario"]: r for r in metrics["scenarios"]["scenarios"]}
+    if {"supplier_delay_14d", "supplier_delay_30d"} <= set(rows):
+        assert rows["supplier_delay_30d"]["fill_rate"] < rows["supplier_delay_14d"]["fill_rate"]
+        assert (
+            rows["supplier_delay_30d"]["stockout_weeks"]
+            > rows["supplier_delay_14d"]["stockout_weeks"]
+        )
+
+
+def test_a_tariff_shock_moves_cost_not_service(metrics):
+    rows = {r["scenario"]: r for r in metrics["scenarios"]["scenarios"]}
+    baseline = rows["baseline"]
+    for name in ("tariff_cn_plus10pp", "tariff_all_plus10pp"):
+        if name not in rows:
+            continue
+        assert rows[name]["landed_cost_per_unit"] > baseline["landed_cost_per_unit"], name
+        assert rows[name]["working_capital"] > baseline["working_capital"], name
+        assert rows[name]["fill_rate"] == pytest.approx(baseline["fill_rate"]), name
+
+
+def test_scenario_method_discloses_the_cost_to_serve_definition(metrics):
+    sc = metrics["scenarios"]
+    assert "common random numbers" in sc["method"]
+    assert "reproduces the baseline exactly" in sc["method"]
+    assert "price of the goods is excluded" in sc["cost_to_serve_definition"]
+    assert "percentage points" in sc["tariff_units"]

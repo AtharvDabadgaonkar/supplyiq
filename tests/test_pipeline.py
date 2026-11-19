@@ -112,3 +112,40 @@ def test_future_forecast_artifact_looks_forward(assumptions, tables):
     future = load_artifact("future_forecast")
     assert future["week_index"].min() > int(tables["demand"]["week_index"].max())
     assert future["step"].max() == assumptions["sample"]["forecast_horizon_weeks"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 scenario artifacts
+# --------------------------------------------------------------------------- #
+def test_preset_scenarios_start_from_the_baseline():
+    from supplyiq.pipeline import preset_scenarios
+
+    presets = preset_scenarios()
+    assert presets[0].name == "baseline"
+    assert presets[0].is_baseline
+    assert len({s.name for s in presets}) == len(presets), "duplicate scenario names"
+    assert sum(1 for s in presets if s.is_baseline) == 1
+
+
+def test_scenario_table_carries_deltas_against_baseline(tables, assumptions):
+    from supplyiq.pipeline import build
+
+    built = build(tables, assumptions, with_evaluation=False, with_scenarios=True)
+    table = built.scenario_table()
+    assert len(table) == len(built.scenarios)
+    baseline_row = table[table["scenario"] == "baseline"].iloc[0]
+    assert baseline_row["delta_fill_rate"] == 0.0
+    assert baseline_row["delta_cost_to_serve"] == 0.0
+    # Every non-baseline scenario costs at least as much to serve.
+    others = table[table["scenario"] != "baseline"]
+    assert (others["delta_cost_to_serve"] > 0).all()
+
+
+def test_scenario_artifacts_are_committed(assumptions):
+    if missing_artifacts():
+        pytest.skip("artifacts not built; run `make metrics`")
+    summary = load_artifact("scenario_summary")
+    assert "baseline" in set(summary["scenario"])
+    assert len(summary) >= 4
+    per_item = load_artifact("baseline_per_item")
+    assert {"sku", "store", "fill_rate", "short_units"} <= set(per_item.columns)
