@@ -59,8 +59,66 @@ def test_cost_model_states_its_formulas(metrics):
 
 
 def test_metrics_declare_which_phases_are_complete(metrics):
-    assert metrics["phases_complete"] == [1]
-    assert set(metrics["pending_phases"]) == {"2", "3", "4"}
+    assert metrics["phases_complete"] == [1, 2]
+    assert set(metrics["pending_phases"]) == {"3", "4"}
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 figures must reconcile with a fresh build
+# --------------------------------------------------------------------------- #
+def test_forecast_metrics_name_a_winner_and_show_an_improvement(metrics):
+    fc = metrics["forecast_accuracy"]
+    assert fc["winner"] == fc["candidate_model"]
+    assert fc["wape_improvement_pp"] > 0
+    base = fc["models"][fc["baseline_model"]]
+    cand = fc["models"][fc["candidate_model"]]
+    assert cand["wape"] < base["wape"]
+    # Both figures are rounded in the JSON (wape to 6dp, the improvement to 4dp),
+    # so they can only agree to within that stored precision.
+    assert abs((base["wape"] - cand["wape"]) * 100 - fc["wape_improvement_pp"]) < 1e-3
+
+
+def test_forecast_metrics_disclose_the_mape_exclusion(metrics):
+    """Quoting MAPE on intermittent demand without saying so would be misleading."""
+    fc = metrics["forecast_accuracy"]
+    assert "excluded from MAPE" in fc["mape_note"]
+    cand = fc["models"][fc["candidate_model"]]
+    assert cand["n_zero_weeks"] > 0
+    assert cand["mape"] > cand["wape"], "MAPE should be the less flattering number here"
+
+
+def test_inventory_metrics_match_the_policy_table(metrics, policy):
+    inv = metrics["inventory_policy"]
+    assert inv["total_safety_stock_units"] == pytest.approx(
+        float(policy["safety_stock"].sum()), rel=1e-4
+    )
+    assert inv["total_average_inventory_value"] == pytest.approx(
+        float(policy["average_inventory_value"].sum()), rel=1e-4
+    )
+    assert inv["items_ordering_at_moq"] == int(policy["order_at_moq"].sum())
+
+
+def test_inventory_metrics_quantify_the_lead_time_term(metrics):
+    inv = metrics["inventory_policy"]
+    assert inv["safety_stock_units_with_leadtime_risk"] > inv["safety_stock_units_demand_risk_only"]
+    assert inv["leadtime_risk_uplift_pct"] > 0
+
+
+def test_segmentation_metrics_follow_the_configured_cutoffs(metrics, assumptions):
+    seg = metrics["segmentation"]
+    assert seg["abc_cutoffs"] == assumptions["policy"]["abc_revenue_cutoffs"]
+    by_abc = {row["abc_class"]: row for row in seg["by_abc"]}
+    assert by_abc["A"]["revenue_share"] == pytest.approx(
+        assumptions["policy"]["abc_revenue_cutoffs"]["A"], abs=0.05
+    )
+    assert sum(seg["xyz_counts"].values()) == sum(r["items"] for r in seg["by_abc"])
+
+
+def test_every_reported_method_is_stated(metrics):
+    """A number without its formula is not reproducible."""
+    assert "sqrt" in metrics["inventory_policy"]["method"]["safety_stock"]
+    assert "holdout" in metrics["forecast_accuracy"]["method"].lower()
+    assert "Pareto" in metrics["segmentation"]["method"]
 
 
 def test_metrics_script_is_reproducible(metrics):

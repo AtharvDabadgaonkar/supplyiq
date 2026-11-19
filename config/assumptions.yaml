@@ -75,8 +75,8 @@ suppliers:
       lead_time_sd_days: 9.0
       otif_target: 0.88
       unit_cost_index: 0.82      # multiplier on the M5 sell_price-derived unit cost
-      moq_units: 500
-      order_multiple_units: 100
+      moq_units: 72
+      order_multiple_units: 12
     - supplier_id: SUP-CN-02
       name: Ningbo Household Works
       country: CN
@@ -84,8 +84,8 @@ suppliers:
       lead_time_sd_days: 11.0
       otif_target: 0.84
       unit_cost_index: 0.80
-      moq_units: 400
-      order_multiple_units: 50
+      moq_units: 60
+      order_multiple_units: 12
     - supplier_id: SUP-VN-01
       name: Hai Phong Light Manufacturing
       country: VN
@@ -93,8 +93,8 @@ suppliers:
       lead_time_sd_days: 7.5
       otif_target: 0.91
       unit_cost_index: 0.86
-      moq_units: 300
-      order_multiple_units: 50
+      moq_units: 48
+      order_multiple_units: 12
     - supplier_id: SUP-VN-02
       name: Da Nang Packaged Foods
       country: VN
@@ -102,8 +102,8 @@ suppliers:
       lead_time_sd_days: 6.0
       otif_target: 0.93
       unit_cost_index: 0.88
-      moq_units: 250
-      order_multiple_units: 50
+      moq_units: 48
+      order_multiple_units: 6
     - supplier_id: SUP-MX-01
       name: Monterrey Nearshore Foods
       country: MX
@@ -111,8 +111,8 @@ suppliers:
       lead_time_sd_days: 3.5
       otif_target: 0.95
       unit_cost_index: 0.97
-      moq_units: 100
-      order_multiple_units: 25
+      moq_units: 36
+      order_multiple_units: 6
     - supplier_id: SUP-MX-02
       name: Guadalajara Home Supply
       country: MX
@@ -120,8 +120,8 @@ suppliers:
       lead_time_sd_days: 4.0
       otif_target: 0.94
       unit_cost_index: 0.95
-      moq_units: 150
-      order_multiple_units: 25
+      moq_units: 36
+      order_multiple_units: 6
     - supplier_id: SUP-US-01
       name: Central Valley Packing
       country: US
@@ -129,8 +129,8 @@ suppliers:
       lead_time_sd_days: 1.8
       otif_target: 0.97
       unit_cost_index: 1.10
-      moq_units: 50
-      order_multiple_units: 10
+      moq_units: 24
+      order_multiple_units: 6
     - supplier_id: SUP-US-02
       name: Inland Empire Distribution
       country: US
@@ -138,8 +138,8 @@ suppliers:
       lead_time_sd_days: 2.5
       otif_target: 0.96
       unit_cost_index: 1.06
-      moq_units: 50
-      order_multiple_units: 10
+      moq_units: 24
+      order_multiple_units: 6
   # Share of SKUs assigned to each supplier, by category. Rows must sum to 1.0.
   sku_allocation:
     FOODS:     {SUP-MX-01: 0.25, SUP-VN-02: 0.25, SUP-US-01: 0.30, SUP-MX-02: 0.20}
@@ -189,7 +189,12 @@ costs:
     transit_days: 3
   holding_cost_rate_annual: 0.22  # % of inventory value per year (capital + space + risk)
   stockout_penalty_per_unit: 1.50 # lost-margin proxy charged per unit short
-  ordering_cost_per_po: 120.0     # fixed cost per purchase order, used by EOQ
+  # Cost of raising ONE replenishment LINE, not one PO document. A PO covers
+  # many lines, so per-line cost is transaction handling and receiving, not the
+  # whole procurement overhead. Setting this at PO level (~$120) makes EOQ for a
+  # $4 item selling 4 units/week come out near a year of demand, which is not
+  # how anyone replenishes a store.
+  ordering_cost_per_po: 35.0
 
 # ---------------------------------------------------------------------------
 # Inventory policy settings (PLAN module).
@@ -206,6 +211,12 @@ policy:
   # the backtest (the "current policy" baseline uses a flat weeks-of-cover rule).
   service_level_by_abc: {A: 0.98, B: 0.95, C: 0.90}
   min_safety_stock_units: 0
+  # Coverage cap applied AFTER EOQ and the supplier's MOQ. Unconstrained EOQ on
+  # cheap, slow-moving items orders many months of stock, because holding cost
+  # per unit is tiny next to the cost of ordering. Real planners cap coverage
+  # instead: it is the lever that keeps weeks-of-supply and inventory turns in a
+  # sane range. Binding here for most C items.
+  max_weeks_of_supply: 8
   initial_stock_weeks_of_cover: 4 # opening inventory for the simulation
 
 # ---------------------------------------------------------------------------

@@ -57,9 +57,57 @@ def render(m: dict) -> str:
         f"| Landed vs. ex-works cost uplift | {cm['landed_vs_unit_cost_uplift_pct']:.1f}% | simulated |",
         f"| Items exposed to tariffs | {cm['tariff_exposed_share']:.1%} "
         f"({cm['items_exposed_to_tariff']:,} items) | simulated |",
+    ]
+
+    fc = m.get("forecast_accuracy")
+    if fc:
+        base = fc["models"][fc["baseline_model"]]
+        cand = fc["models"][fc["candidate_model"]]
+        lines += [
+            "",
+            "**Forecast accuracy** — fitted on the training weeks, scored on the untouched holdout.",
+            "",
+            "| Model | WAPE | MAPE | Bias | RMSE |",
+            "| --- | --- | --- | --- | --- |",
+            f"| `{fc['baseline_model']}` (baseline) | {base['wape']:.3f} | {base['mape']:.3f} | "
+            f"{base['bias_pct']:+.3f} | {base['rmse']:.2f} |",
+            f"| `{fc['candidate_model']}` (candidate) | **{cand['wape']:.3f}** | {cand['mape']:.3f} | "
+            f"{cand['bias_pct']:+.3f} | {cand['rmse']:.2f} |",
+            "",
+            f"The candidate takes **{fc['wape_improvement_pp']:.1f} percentage points** off the "
+            f"baseline's WAPE, a {fc['wape_improvement_pct_of_baseline']:.0f}% relative "
+            f"improvement. {fc['mape_note']}",
+        ]
+
+    inv = m.get("inventory_policy")
+    if inv:
+        lines += [
+            "",
+            "**Inventory policy** — at the configured service levels "
+            f"(A {inv['service_level_by_abc']['A']:.0%}, B {inv['service_level_by_abc']['B']:.0%}, "
+            f"C {inv['service_level_by_abc']['C']:.0%}).",
+            "",
+            "| Metric | Value |",
+            "| --- | --- |",
+            f"| Projected fill rate (demand weighted) | {inv['weighted_fill_rate']:.2%} |",
+            f"| Portfolio inventory turns | {inv['portfolio_inventory_turns']:.1f} |",
+            f"| Median weeks of supply | {inv['median_weeks_of_supply']:.1f} |",
+            f"| Total safety stock | {inv['total_safety_stock_units']:,.0f} units "
+            f"(${inv['total_safety_stock_value']:,.0f}) |",
+            f"| Average inventory value | ${inv['total_average_inventory_value']:,.0f} |",
+            f"| **Safety stock added by lead-time variability** | "
+            f"**+{inv['leadtime_risk_uplift_pct']:.1f}%** vs. a demand-only formula |",
+            "",
+            f"That last row is the point of the PLAN module: ignoring lead-time variability — "
+            f"which a flat weeks-of-cover rule does — would under-protect this portfolio by "
+            f"{inv['leadtime_risk_uplift_pct']:.1f}% of its safety stock, concentrated on the "
+            "long overseas lanes.",
+        ]
+
+    lines += [
         "",
-        f"_Phases complete: {phases} of 5. Forecast accuracy, inventory policy, "
-        "scenario and backtest figures appear here as those phases land._",
+        f"_Phases complete: {phases} of 5. Scenario and backtest figures appear here as those "
+        "phases land._",
         "",
         END,
     ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -33,3 +34,32 @@ def provenance(built):
     if not built:
         pytest.skip("data/sample not built; run `make ingest`")
     return read_provenance()
+
+
+@pytest.fixture(scope="session")
+def planning(tables, assumptions):
+    """The PLAN/SENSE artifacts, built once per test session.
+
+    `with_evaluation=False` keeps it fast: the ETS fit over the whole panel
+    takes ~25s and only the forecast tests need it.
+    """
+    from supplyiq.pipeline import build
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return build(tables, assumptions, with_evaluation=False)
+
+
+@pytest.fixture(scope="session")
+def policy(planning):
+    return planning.policy
+
+
+@pytest.fixture(scope="session")
+def segmented(planning):
+    return planning.segmented
+
+
+@pytest.fixture(scope="session")
+def performance(planning):
+    return planning.performance

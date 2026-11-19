@@ -4,11 +4,12 @@
 This file is the ONLY source for figures quoted in the README or the UI. If a
 number is not in here, it does not get reported.
 
-Phase 1 writes the data-provenance and supplier-performance facts. Each later
-phase adds its own block:
-    phase 2 -> forecast_accuracy, segmentation, inventory_policy
+It also precomputes the planning artifacts into data/derived/ so the deployed
+app loads Parquet instead of refitting models on the free Cloud tier.
+
+Phases 1 and 2 are written. Each later phase adds its own block:
     phase 3 -> scenarios
-    phase 4 -> agent, backtest
+    phase 4 -> agent_recommendations, backtest
 """
 from __future__ import annotations
 
@@ -19,12 +20,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import warnings  # noqa: E402
+
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from supplyiq import __version__, paths  # noqa: E402
 from supplyiq.config import load_assumptions  # noqa: E402
 from supplyiq.data import load_all, read_provenance, split_weeks, utc_now_iso  # noqa: E402
+from supplyiq.inventory import (  # noqa: E402
+    demand_sd_over_leadtime,
+    policy_summary,
+    segment_summary,
+)
+from supplyiq.pipeline import build as build_planning, write_artifacts  # noqa: E402
 
 
 def data_block(tables: dict[str, pd.DataFrame], a: dict) -> dict:
@@ -107,10 +116,121 @@ def cost_block(tables: dict[str, pd.DataFrame], a: dict) -> dict:
     }
 
 
+def forecast_block(planning) -> dict:
+    ev = planning.evaluation
+    per_item = ev.per_item
+    models = {}
+    for model, acc in ev.overall.items():
+        rows = per_item[per_item["model"] == model]
+        models[model] = {
+            **{k: (round(v, 6) if isinstance(v, float) else v) for k, v in acc.as_dict().items()},
+            "median_item_wape": round(float(rows["wape"].median()), 6),
+            "items_scored": int(len(rows)),
+        }
+    baseline = ev.overall[ev.baseline_model]
+    candidate = ev.overall[ev.candidate_model]
+    return {
+        "method": (
+            "Time-based holdout: fit on the training weeks, score on the final weeks, "
+            "which the models never see. Pooled (volume-weighted), not a mean of per-item ratios."
+        ),
+        "baseline_model": ev.baseline_model,
+        "candidate_model": ev.candidate_model,
+        "winner": ev.winner,
+        "train_weeks": list(ev.train_weeks),
+        "holdout_weeks": list(ev.holdout_weeks),
+        "wape_improvement_pp": round(ev.improvement_pp(), 4),
+        "wape_improvement_pct_of_baseline": round(
+            float((baseline.wape - candidate.wape) / baseline.wape * 100), 2
+        ),
+        "mape_note": (
+            f"{candidate.n_zero_weeks} of {candidate.n_weeks} holdout weeks had zero sales and are "
+            "excluded from MAPE; WAPE keeps every unit of demand in the denominator."
+        ),
+        "models": models,
+    }
+
+
+def segmentation_block(planning, a: dict) -> dict:
+    policy = planning.policy
+    grid = segment_summary(policy)
+    by_abc = (
+        policy.groupby("abc_class")
+        .agg(
+            items=("sku", "size"),
+            revenue=("revenue", "sum"),
+            inventory_value=("average_inventory_value", "sum"),
+            median_demand_cv=("demand_cv", "median"),
+            service_level=("service_level", "first"),
+        )
+        .reset_index()
+    )
+    by_abc["revenue_share"] = (by_abc["revenue"] / by_abc["revenue"].sum()).round(4)
+    by_abc["inventory_value_share"] = (
+        by_abc["inventory_value"] / by_abc["inventory_value"].sum()
+    ).round(4)
+    return {
+        "method": (
+            "ABC on cumulative revenue share (Pareto); XYZ on the coefficient of variation "
+            "of weekly demand. Both computed on training weeks only."
+        ),
+        "abc_cutoffs": a["policy"]["abc_revenue_cutoffs"],
+        "xyz_cutoffs": a["policy"]["xyz_cv_cutoffs"],
+        "by_abc": json.loads(by_abc.round(4).to_json(orient="records")),
+        "xyz_counts": {k: int(v) for k, v in policy["xyz_class"].value_counts().items()},
+        "abc_xyz_grid": json.loads(grid.round(4).to_json(orient="records")),
+    }
+
+
+def inventory_block(planning, a: dict) -> dict:
+    policy = planning.policy
+    summary = policy_summary(policy)
+
+    # What the lead-time term contributes: rebuild safety stock with sd_L = 0.
+    demand_only = np.array(
+        [
+            demand_sd_over_leadtime(d, sd, lt, 0.0)
+            for d, sd, lt in zip(
+                policy["mean_weekly_demand"], policy["sd_weekly_demand"], policy["protection_weeks"]
+            )
+        ]
+    )
+    ss_demand_only = float((policy["z"].to_numpy() * demand_only).sum())
+    ss_full = float(policy["safety_stock"].sum())
+
+    return {
+        "method": {
+            "safety_stock": "z * sqrt(L * sd_demand^2 + mean_demand^2 * sd_leadtime^2)",
+            "reorder_point": "mean_demand * (lead_time + review_period) + safety_stock",
+            "eoq": "sqrt(2 * annual_demand * ordering_cost / (landed_cost * holding_rate))",
+            "order_quantity": "EOQ, raised to the supplier MOQ and order multiple, then capped at max_weeks_of_supply",
+            "fill_rate": "1 - sd_over_leadtime * G(z) / order_quantity, where G is the normal loss function",
+        },
+        "service_level_by_abc": a["policy"]["service_level_by_abc"],
+        "review_period_weeks": a["policy"]["review_period_weeks"],
+        "max_weeks_of_supply": a["policy"]["max_weeks_of_supply"],
+        **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in summary.items()},
+        "safety_stock_units_demand_risk_only": round(ss_demand_only, 2),
+        "safety_stock_units_with_leadtime_risk": round(ss_full, 2),
+        "leadtime_risk_uplift_pct": round(float((ss_full / ss_demand_only - 1) * 100), 2),
+        "items_capped_by_coverage": int(policy["eoq_capped_by_coverage"].sum()),
+        "items_ordering_at_moq": int(policy["order_at_moq"].sum()),
+        "median_lead_time_weeks": round(float(policy["lead_time_mean_weeks"].median()), 3),
+    }
+
+
 def main() -> int:
     a = load_assumptions()
     tables = load_all(check=True)
     prov = read_provenance()
+
+    print("building planning artifacts (fitting forecast models) ...")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        planning = build_planning(tables, a, with_evaluation=True)
+    written = write_artifacts(planning)
+    for name, path in written.items():
+        print(f"  {name:22s} {path.stat().st_size / 1e6:6.2f} MB  {path.name}")
 
     metrics = {
         "_about": (
@@ -120,7 +240,7 @@ def main() -> int:
         "generated_at": utc_now_iso(),
         "supplyiq_version": __version__,
         "python_version": platform.python_version(),
-        "phases_complete": [1],
+        "phases_complete": [1, 2],
         "data_provenance": {
             "origin": prov.origin,
             "is_real_data": prov.is_real,
@@ -135,6 +255,10 @@ def main() -> int:
         "data": data_block(tables, a),
         "supplier_performance": supplier_block(tables),
         "cost_model": cost_block(tables, a),
+        "forecast_accuracy": forecast_block(planning),
+        "segmentation": segmentation_block(planning, a),
+        "inventory_policy": inventory_block(planning, a),
+        "supplier_service": planning.overall,
         "agent": {
             "provider_configured": str(a["agent"]["provider"]),
             "llm_may_produce_numbers": bool(a["agent"]["llm_may_produce_numbers"]),
@@ -145,7 +269,6 @@ def main() -> int:
             ),
         },
         "pending_phases": {
-            "2": ["forecast_accuracy", "segmentation", "inventory_policy"],
             "3": ["scenarios"],
             "4": ["agent_recommendations", "backtest"],
         },
@@ -162,6 +285,14 @@ def main() -> int:
     print(f"  late delivery rate   {metrics['supplier_performance']['overall_late_delivery_rate']:.1%}")
     print(f"  mean landed cost     ${metrics['cost_model']['mean_landed_cost']:.2f}")
     print(f"  tariff-exposed items {metrics['cost_model']['tariff_exposed_share']:.1%}")
+    fc = metrics["forecast_accuracy"]
+    inv = metrics["inventory_policy"]
+    print(f"  forecast WAPE        {fc['models'][fc['baseline_model']]['wape']:.3f} "
+          f"({fc['baseline_model']}) -> {fc['models'][fc['candidate_model']]['wape']:.3f} "
+          f"({fc['candidate_model']}), {fc['wape_improvement_pp']:+.1f} pp")
+    print(f"  inventory turns      {inv['portfolio_inventory_turns']:.1f}")
+    print(f"  weighted fill rate   {inv['weighted_fill_rate']:.3%}")
+    print(f"  lead-time SS uplift  {inv['leadtime_risk_uplift_pct']:.1f}%")
 
     # Keep the README's metrics block in sync, so no figure is ever hand-typed.
     from scripts.render_readme import main as render_readme  # noqa: PLC0415
