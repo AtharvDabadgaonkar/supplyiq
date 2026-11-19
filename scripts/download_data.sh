@@ -2,9 +2,13 @@
 # Download the raw Kaggle datasets into data/raw/.
 #
 # Prerequisites (you do these once, yourself):
-#   1. kaggle.com > Settings > API > Create New Token  -> downloads kaggle.json
-#   2. mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
-#   3. Accept the M5 competition rules:
+#   1. kaggle.com > Settings > API. Either:
+#        a. "Generate New Token" (recommended) -> save the KGAT_... value to
+#           ~/.kaggle/access_token, or export KAGGLE_API_TOKEN=KGAT_...
+#        b. "Create Legacy API Key" -> downloads kaggle.json; move it to
+#           ~/.kaggle/kaggle.json and chmod 600 it.
+#   2. Accept the M5 competition rules. The download returns HTTP 403 until you
+#      have, and only the account holder can accept them:
 #      https://www.kaggle.com/competitions/m5-forecasting-accuracy/rules
 #
 # Raw files are gitignored and never committed.
@@ -14,9 +18,13 @@ RAW_DIR="${RAW_DIR:-data/raw}"
 M5_DIR="$RAW_DIR/m5"
 DATACO_DIR="$RAW_DIR/dataco"
 
-if [ ! -f "$HOME/.kaggle/kaggle.json" ] && [ -z "${KAGGLE_USERNAME:-}" ]; then
+if [ ! -f "$HOME/.kaggle/access_token" ] \
+   && [ ! -f "$HOME/.kaggle/kaggle.json" ] \
+   && [ -z "${KAGGLE_API_TOKEN:-}" ] \
+   && [ -z "${KAGGLE_USERNAME:-}" ]; then
   echo "ERROR: no Kaggle credentials found." >&2
-  echo "       Expected ~/.kaggle/kaggle.json (see the header of this script)." >&2
+  echo "       Expected ~/.kaggle/access_token or ~/.kaggle/kaggle.json" >&2
+  echo "       (see the header of this script)." >&2
   exit 1
 fi
 
@@ -26,14 +34,22 @@ if [ -z "$KAGGLE_BIN" ] && [ -x ".venv/bin/kaggle" ]; then
 fi
 if [ -z "$KAGGLE_BIN" ]; then
   echo "Installing the kaggle CLI into .venv (dev-only; not in requirements.txt) ..."
-  .venv/bin/pip install --quiet kaggle
+  # >= 1.8.0 is required for the KGAT_ API tokens.
+  .venv/bin/pip install --quiet --upgrade "kaggle>=1.8.0"
   KAGGLE_BIN=".venv/bin/kaggle"
 fi
 
 mkdir -p "$M5_DIR" "$DATACO_DIR"
 
 echo "==> M5 Forecasting - Accuracy (competition)"
-"$KAGGLE_BIN" competitions download -c m5-forecasting-accuracy -p "$M5_DIR" --force
+if ! "$KAGGLE_BIN" competitions download -c m5-forecasting-accuracy -p "$M5_DIR" --force; then
+  echo >&2
+  echo "ERROR: the M5 download failed. The usual cause is that the competition" >&2
+  echo "       rules have not been accepted on this Kaggle account. Accept them at" >&2
+  echo "       https://www.kaggle.com/competitions/m5-forecasting-accuracy/rules" >&2
+  echo "       and run this script again." >&2
+  exit 1
+fi
 unzip -o -q "$M5_DIR"/m5-forecasting-accuracy.zip -d "$M5_DIR"
 rm -f "$M5_DIR"/m5-forecasting-accuracy.zip
 

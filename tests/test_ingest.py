@@ -277,3 +277,68 @@ def test_committed_sample_fits_the_streamlit_cloud_budget():
 
     total = sum(p.stat().st_size for p in SAMPLE_DIR.glob("*.parquet"))
     assert total < 25e6, f"sample is {total / 1e6:.1f} MB; budget is 25 MB"
+
+
+# --------------------------------------------------------------------------- #
+# DataCo contains customer PII. We read five operational columns and nothing else.
+# --------------------------------------------------------------------------- #
+DATACO_PII_COLUMNS = {
+    "Customer Email",
+    "Customer Password",
+    "Customer Fname",
+    "Customer Lname",
+    "Customer Street",
+    "Customer Zipcode",
+    "Latitude",
+    "Longitude",
+    "Customer City",
+    "Customer State",
+    "Customer Id",
+    "Order Customer Id",
+}
+
+
+def test_dataco_reader_requests_only_operational_columns():
+    """DataCo ships real customer names, emails and plaintext passwords.
+
+    The ingest must never pull them into the processed sample, which is
+    committed to a public repo.
+    """
+    import inspect
+
+    from supplyiq import ingest
+
+    source = inspect.getsource(ingest._read_dataco)
+    for column in DATACO_PII_COLUMNS:
+        assert column not in source, f"ingest references PII column {column!r}"
+
+
+def test_processed_sample_contains_no_pii_columns(tables):
+    from supplyiq.ingest import _norm
+
+    banned = {_norm(c) for c in DATACO_PII_COLUMNS}
+    for name, df in tables.items():
+        for column in df.columns:
+            assert _norm(column) not in banned, f"{name}.{column} looks like PII"
+
+
+@pytest.mark.slow
+def test_dataco_reader_works_on_the_real_file():
+    """Runs only when the raw DataCo file is present; proves the header matching holds."""
+    from supplyiq import paths
+    from supplyiq.ingest import _read_dataco, find_raw_file, DATACO_FILES
+
+    path = find_raw_file(DATACO_FILES, paths.RAW_DIR)
+    if path is None:
+        pytest.skip("raw DataCo file not downloaded")
+    df = _read_dataco(path)
+    assert set(df.columns) == {
+        "days_actual",
+        "days_scheduled",
+        "late_delivery",
+        "customer_region",
+        "shipping_mode",
+    }
+    assert len(df) > 1000
+    assert df["late_delivery"].isin([0, 1]).all()
+    assert df["shipping_mode"].notna().any()
