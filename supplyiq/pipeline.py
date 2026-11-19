@@ -33,7 +33,16 @@ ARTIFACTS = {
     "future_forecast": "future_forecast.parquet",
     "scenario_summary": "scenario_summary.parquet",
     "baseline_per_item": "baseline_per_item.parquet",
+    "recommendations": "recommendations.parquet",
+    "backtest_comparison": "backtest_comparison.parquet",
+    "backtest_sweep": "backtest_sweep.parquet",
+    "backtest_cover_sweep": "backtest_cover_sweep.parquet",
+    "backtest_frontier": "backtest_frontier.parquet",
 }
+
+# The scenario the Planning Agent page opens on. A disruption, not the
+# baseline: with no disruption there is nothing for the agent to recommend.
+AGENT_SCENARIO = "supplier_delay_30d"
 
 
 # The scenarios precomputed for the Control Tower. The sliders re-run the
@@ -71,6 +80,8 @@ class Planning:
     evaluation: Evaluation | None = None
     future: pd.DataFrame | None = None
     scenarios: dict[str, SimulationResult] = field(default_factory=dict)
+    recommendations: pd.DataFrame | None = None
+    backtest: Any = None
 
     @property
     def baseline(self) -> SimulationResult:
@@ -111,6 +122,8 @@ def build(
     with_evaluation: bool = True,
     service_level: float | None = None,
     with_scenarios: bool = False,
+    with_recommendations: bool = False,
+    with_backtest: bool = False,
 ) -> Planning:
     """Build segmentation, supplier performance and the inventory policy.
 
@@ -143,7 +156,7 @@ def build(
         run_scenarios(policy, test, preset_scenarios(), a) if with_scenarios else {}
     )
 
-    return Planning(
+    planning = Planning(
         train=train,
         test=test,
         stats=stats,
@@ -155,6 +168,28 @@ def build(
         future=future,
         scenarios=scenarios,
     )
+
+    if with_recommendations and scenarios:
+        from supplyiq.act import recommend, to_frame
+
+        scenario_name = AGENT_SCENARIO if AGENT_SCENARIO in scenarios else "baseline"
+        chosen = scenarios[scenario_name]
+        planning.recommendations = to_frame(
+            recommend(
+                policy.sort_values(ITEM_KEYS).reset_index(drop=True),
+                test,
+                chosen.scenario,
+                a,
+                result=chosen,
+            )
+        )
+
+    if with_backtest:
+        from supplyiq import backtest as backtest_module
+
+        planning.backtest = backtest_module.run(planning, tables, a)
+
+    return planning
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +221,21 @@ def write_artifacts(planning: Planning, directory: Path | None = None) -> dict[s
     if planning.scenarios:
         frames["scenario_summary"] = planning.scenario_table()
         frames["baseline_per_item"] = planning.baseline.per_item
+    if planning.recommendations is not None and len(planning.recommendations):
+        recs = planning.recommendations.copy()
+        # `scenario` arrives as a dict; Parquet needs something flat.
+        if "scenario" in recs.columns:
+            recs["scenario"] = recs["scenario"].map(
+                lambda v: v.get("name", "baseline") if isinstance(v, dict) else v
+            )
+        frames["recommendations"] = recs
+    if planning.backtest is not None:
+        from supplyiq.backtest import comparison_table
+
+        frames["backtest_comparison"] = comparison_table(planning.backtest)
+        frames["backtest_sweep"] = planning.backtest.sweep
+        frames["backtest_cover_sweep"] = planning.backtest.cover_sweep
+        frames["backtest_frontier"] = planning.backtest.frontier
 
     for name, df in frames.items():
         path = artifact_path(name, out_dir)

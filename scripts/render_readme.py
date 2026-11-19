@@ -126,9 +126,71 @@ def render(m: dict) -> str:
             f"Tariff changes are {sc['tariff_units']}.",
         ]
 
+    bt = m.get("backtest")
+    if bt:
+        d = bt["at_default_settings"]
+        e = bt["at_equal_service"]
+        lines += [
+            "",
+            "**Backtest** — SupplyIQ policy vs. the policy a planner runs today "
+            "(naive forecast, flat weeks of cover), same simulator, same weeks, "
+            "same lead-time draws.",
+            "",
+            "| Metric | Current | SupplyIQ | Change |",
+            "| --- | --- | --- | --- |",
+            f"| Fill rate | {d['current_fill_rate']:.2%} | {d['supplyiq_fill_rate']:.2%} | "
+            f"**{d['fill_rate_change_pp']:+.2f} pp** |",
+            f"| Stockout weeks | {d['current_stockout_weeks']:.0f} | "
+            f"{d['supplyiq_stockout_weeks']:.0f} | "
+            f"**−{d['stockout_weeks_avoided']:.0f} ({d['stockout_weeks_avoided_pct']:.0f}%)** |",
+            f"| Units short | {d['current_short_units']:,.0f} | {d['supplyiq_short_units']:,.0f} | "
+            f"{d['supplyiq_short_units'] - d['current_short_units']:+,.0f} |",
+            f"| Working capital | ${d['current_working_capital']:,.0f} | "
+            f"${d['supplyiq_working_capital']:,.0f} | {d['working_capital_change_pct']:+.1f}% |",
+            f"| Cost to serve | ${d['current_cost_to_serve']:,.0f} | "
+            f"${d['supplyiq_cost_to_serve']:,.0f} | {d['cost_to_serve_change_pct']:+.1f}% |",
+        ]
+        if e.get("comparable_points"):
+            lines += [
+                "",
+                "At their default settings SupplyIQ buys a lot more service for more "
+                f"capital. The like-for-like question is what each policy must hold to "
+                f"reach the SAME fill rate, so both are swept — SupplyIQ across service "
+                f"levels, the flat rule across weeks of cover:",
+                "",
+                f"> **At equal service, the SupplyIQ policy needs "
+                f"{e['capital_saving_pct_median']:.0f}% less working capital** "
+                f"(range {e['capital_saving_pct_min']:.1f}%–{e['capital_saving_pct_max']:.1f}% "
+                f"across {e['comparable_points']} comparable fill rates between "
+                f"{e['fill_rate_range'][0]:.1%} and {e['fill_rate_range'][1]:.1%}). "
+                f"{e['not_comparable_points']} swept points fall below the range where both "
+                "policies can operate and are excluded rather than averaged in.",
+                "",
+                f"**The finding worth the write-up:** {bt['key_finding']}",
+            ]
+
+    ag = m.get("agent_recommendations")
+    if ag and ag.get("recommendations"):
+        lines += [
+            "",
+            f"**Planning agent** — under the *{ag['scenario'].replace('_', ' ')}* scenario, "
+            f"{ag['recommendations']} at-risk items, each action priced by re-running the "
+            "simulator:",
+            "",
+            f"- Action mix: "
+            + ", ".join(f"{v}× {k.replace('_', ' ')}" for k, v in ag["action_mix"].items()),
+            f"- Total service recovered: **{ag['total_service_gain_pp']:.1f} pp** of fill rate "
+            f"for **${ag['total_action_cost']:,.0f}**",
+            f"- Median cost per point of fill rate: **${ag['median_cost_per_service_point']:,.0f}**",
+            "",
+            "The language model writes the explanation, never the numbers — and generated "
+            "text containing a figure the simulator did not produce is discarded "
+            "automatically.",
+        ]
+
     lines += [
         "",
-        f"_Phases complete: {phases} of 5. Backtest figures appear here as that phase lands._",
+        f"_Phases complete: {phases} of 5. The Streamlit pages and the live demo land in Phase 5._",
         "",
         END,
     ]

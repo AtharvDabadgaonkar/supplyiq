@@ -47,6 +47,7 @@ not free up cash, it strands it on a ship.
 from __future__ import annotations
 
 import math
+import zlib
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal
 
@@ -188,21 +189,40 @@ def lognormal_params(mean_days: float, sd_days: float) -> tuple[float, float]:
     return mu, sigma
 
 
+def item_seed(seed: int, sku: str, store: str) -> int:
+    """A stable per-item seed, independent of where the item sits in the table.
+
+    Seeding one generator and walking it row by row would tie an item's draws to
+    its position, so simulating a SUBSET of items -- which is exactly what the
+    ACT module does when it prices one recommendation -- would give that item
+    different supply luck than the full run, and the comparison would be
+    meaningless. Keying the stream to the item's own identity makes any subset
+    reproduce the full run exactly.
+    """
+    key = f"{sku}|{store}".encode("utf-8")
+    return (int(seed) ^ zlib.crc32(key)) & 0xFFFFFFFF
+
+
 def draw_lead_times(
     policy: pd.DataFrame, n_weeks: int, seed: int, days_per_week: float = 7.0
 ) -> np.ndarray:
     """One lead-time draw per item per week, in DAYS. Shape (items, weeks).
 
-    Generated up front from a fixed seed so every run of every scenario sees
-    exactly the same supply-side luck.
+    Row order follows `policy`. Each row's stream is keyed to the item, so the
+    same item always draws the same values whatever else is in the table.
     """
-    rng = np.random.default_rng(seed)
     out = np.zeros((len(policy), n_weeks), dtype=float)
-    means = (policy["lead_time_mean_weeks"].to_numpy(dtype=float) * days_per_week)
-    sds = (policy["lead_time_sd_weeks"].to_numpy(dtype=float) * days_per_week)
+    means = policy["lead_time_mean_weeks"].to_numpy(dtype=float) * days_per_week
+    sds = policy["lead_time_sd_weeks"].to_numpy(dtype=float) * days_per_week
+    skus = policy["sku"].to_numpy()
+    stores = policy["store"].to_numpy()
     for i, (mean_days, sd_days) in enumerate(zip(means, sds)):
         mu, sigma = lognormal_params(mean_days, sd_days)
-        out[i] = rng.lognormal(mu, sigma, size=n_weeks) if sigma > 0 else mean_days
+        if sigma <= 0:
+            out[i] = mean_days
+            continue
+        rng = np.random.default_rng(item_seed(seed, skus[i], stores[i]))
+        out[i] = rng.lognormal(mu, sigma, size=n_weeks)
     return out
 
 
@@ -293,10 +313,12 @@ def simulate(
     multiple = items["order_multiple_units"].to_numpy(dtype=float)
     mean_demand = items["mean_weekly_demand"].to_numpy(dtype=float)
 
-    if overrides.order_quantity:
-        for i, key in enumerate(keys):
-            if key in overrides.order_quantity:
-                order_qty[i] = overrides.order_quantity[key]
+    # NOTE: the order-quantity override is applied AFTER opening stock is set,
+    # further down. Opening stock is ROP + order quantity, so applying it here
+    # would let "raise the order quantity" retroactively grant the item free
+    # inventory on week 0 -- which made that action look like it improved fill
+    # rate at negative cost. A planner's current stock is what it is; changing
+    # the order quantity only affects what is ordered from now on.
 
     if lead_time_draws is None:
         lead_time_draws = draw_lead_times(items, n_weeks, int(sim_cfg["seed"]))
@@ -313,7 +335,7 @@ def simulate(
     if scenario.supplier_delay_days:
         lead_days[scoped, :] = lead_days[scoped, :] + scenario.supplier_delay_days
 
-    # --- opening inventory --------------------------------------------------
+    # --- opening inventory, from the UNCHANGED policy ------------------------
     if a["policy"]["initial_stock_policy"] == "order_up_to":
         on_hand = (rop + order_qty).astype(float).copy()
     else:
@@ -322,6 +344,12 @@ def simulate(
         for i, key in enumerate(keys):
             if key in overrides.initial_on_hand:
                 on_hand[i] = overrides.initial_on_hand[key]
+
+    # Now the override may change what gets ORDERED from week 0 onwards.
+    if overrides.order_quantity:
+        for i, key in enumerate(keys):
+            if key in overrides.order_quantity:
+                order_qty[i] = overrides.order_quantity[key]
 
     n_items = len(items)
     pipeline = np.zeros((n_items, n_weeks + 64), dtype=float)   # arrivals by week offset

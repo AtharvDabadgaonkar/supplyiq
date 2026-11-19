@@ -7,8 +7,7 @@ number is not in here, it does not get reported.
 It also precomputes the planning artifacts into data/derived/ so the deployed
 app loads Parquet instead of refitting models on the free Cloud tier.
 
-Phases 1-3 are written. Each later phase adds its own block:
-    phase 4 -> agent_recommendations, backtest
+All five modules are written.
 """
 from __future__ import annotations
 
@@ -276,6 +275,89 @@ def scenario_block(planning, a: dict) -> dict:
     }
 
 
+def agent_block(planning, a: dict) -> dict:
+    recs = planning.recommendations
+    if recs is None or recs.empty:
+        return {"recommendations": 0}
+    helpful = recs[recs["service_gain_pp"] > 0]
+    return {
+        "method": (
+            "At-risk items are ranked by revenue at risk. For each, every candidate "
+            "action is expressed as a simulator override and the inventory twin is "
+            "re-run with and without it, sharing the scenario and the lead-time draws. "
+            "The reported cost and service numbers are the difference between those two "
+            "runs."
+        ),
+        "llm_role": (
+            "Prose only. Generated text is checked against the simulator's output by "
+            "supplyiq.agent.guard; any figure the simulator did not produce causes the "
+            "text to be discarded in favour of the rule-based explanation."
+        ),
+        "scenario": str(recs["scenario"].iloc[0]),
+        "recommendations": int(len(recs)),
+        "actions_that_improve_service": int(len(helpful)),
+        "no_action_recommended": int((recs["action_type"] == "no_action").sum()),
+        "action_mix": {k: int(v) for k, v in recs["action_type"].value_counts().items()},
+        "total_service_gain_pp": round(float(helpful["service_gain_pp"].sum()), 3),
+        "total_action_cost": round(float(helpful["action_cost_delta"].sum()), 2),
+        "median_cost_per_service_point": round(
+            float(helpful["cost_per_service_point"].median()), 2
+        )
+        if len(helpful)
+        else None,
+        "cheapest": _rec_summary(helpful, "cost_per_service_point", ascending=True),
+        "largest_service_gain": _rec_summary(helpful, "service_gain_pp", ascending=False),
+    }
+
+
+def _rec_summary(recs, column: str, ascending: bool) -> dict | None:
+    if recs is None or recs.empty:
+        return None
+    row = recs.sort_values(column, ascending=ascending).iloc[0]
+    return {
+        "sku": row["sku"],
+        "store": row["store"],
+        "action_type": row["action_type"],
+        "service_gain_pp": round(float(row["service_gain_pp"]), 3),
+        "action_cost_delta": round(float(row["action_cost_delta"]), 2),
+        "cost_per_service_point": round(float(row["cost_per_service_point"]), 2),
+    }
+
+
+def backtest_block(planning, a: dict) -> dict:
+    bt = planning.backtest
+    if bt is None:
+        return {}
+    head = bt.headline()
+    return {
+        "method": (
+            "Both policies run through the same simulator, over the same holdout weeks, "
+            "with the same lead-time draws. Only the reorder point and order quantity "
+            "differ."
+        ),
+        "current_policy": (
+            f"naive forecast (next week = last week's sales) and a flat "
+            f"{a['baseline_policy']['weeks_of_cover']:.0f} weeks of cover for every SKU, "
+            "regardless of demand variability or lead time"
+        ),
+        "supplyiq_policy": (
+            "ETS demand statistics, ABC-differentiated service levels, safety stock "
+            "covering demand and lead-time variability"
+        ),
+        "at_default_settings": {k: round(float(v), 4) for k, v in head.items()},
+        "at_equal_service": bt.frontier_summary(),
+        "key_finding": (
+            "Driving the SupplyIQ service level to 0.50 removes its safety stock "
+            "entirely, and it still beats the flat rule's fill rate. The advantage is "
+            "therefore not the safety stock -- it is reordering against each item's own "
+            "lead time, which a flat weeks-of-cover rule cannot do."
+        ),
+        "frontier": json.loads(bt.frontier.round(4).to_json(orient="records")),
+        "supplyiq_sweep": json.loads(bt.sweep.round(5).to_json(orient="records")),
+        "current_policy_sweep": json.loads(bt.cover_sweep.round(5).to_json(orient="records")),
+    }
+
+
 def main() -> int:
     a = load_assumptions()
     tables = load_all(check=True)
@@ -284,7 +366,14 @@ def main() -> int:
     print("building planning artifacts (fitting forecast models) ...")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        planning = build_planning(tables, a, with_evaluation=True, with_scenarios=True)
+        planning = build_planning(
+            tables,
+            a,
+            with_evaluation=True,
+            with_scenarios=True,
+            with_recommendations=True,
+            with_backtest=True,
+        )
     written = write_artifacts(planning)
     for name, path in written.items():
         print(f"  {name:22s} {path.stat().st_size / 1e6:6.2f} MB  {path.name}")
@@ -297,7 +386,7 @@ def main() -> int:
         "generated_at": utc_now_iso(),
         "supplyiq_version": __version__,
         "python_version": platform.python_version(),
-        "phases_complete": [1, 2, 3],
+        "phases_complete": [1, 2, 3, 4],
         "data_provenance": {
             "origin": prov.origin,
             "is_real_data": prov.is_real,
@@ -317,6 +406,8 @@ def main() -> int:
         "inventory_policy": inventory_block(planning, a),
         "supplier_service": planning.overall,
         "scenarios": scenario_block(planning, a),
+        "agent_recommendations": agent_block(planning, a),
+        "backtest": backtest_block(planning, a),
         "agent": {
             "provider_configured": str(a["agent"]["provider"]),
             "llm_may_produce_numbers": bool(a["agent"]["llm_may_produce_numbers"]),
@@ -327,7 +418,7 @@ def main() -> int:
             ),
         },
         "pending_phases": {
-            "4": ["agent_recommendations", "backtest"],
+            "5": ["streamlit_pages", "control_tower_story", "deployment"],
         },
     }
 
@@ -355,6 +446,21 @@ def main() -> int:
           f"({sc['baseline']['stockout_weeks']} stockout weeks)")
     print(f"  worst scenario       {sc['worst_case']['scenario']} "
           f"({sc['worst_case']['fill_rate_vs_baseline_pp']:+.2f} pp fill rate)")
+    ag = metrics["agent_recommendations"]
+    bt = metrics["backtest"]
+    if ag.get("recommendations"):
+        print(f"  recommendations      {ag['recommendations']} "
+              f"({ag['total_service_gain_pp']:.1f} pp for ${ag['total_action_cost']:,.0f})")
+    if bt:
+        d = bt["at_default_settings"]
+        e = bt["at_equal_service"]
+        print(f"  backtest fill rate   {d['current_fill_rate']:.3%} -> "
+              f"{d['supplyiq_fill_rate']:.3%} ({d['fill_rate_change_pp']:+.2f} pp)")
+        print(f"  stockouts avoided    {d['stockout_weeks_avoided']:.0f} of "
+              f"{d['current_stockout_weeks']:.0f} ({d['stockout_weeks_avoided_pct']:.0f}%)")
+        if e.get("comparable_points"):
+            print(f"  capital at equal svc {e['capital_saving_pct_median']:.1f}% less "
+                  f"(range {e['capital_saving_pct_min']:.1f}-{e['capital_saving_pct_max']:.1f}%)")
 
     # Keep the README's metrics block in sync, so no figure is ever hand-typed.
     from scripts.render_readme import main as render_readme  # noqa: PLC0415

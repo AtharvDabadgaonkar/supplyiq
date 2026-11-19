@@ -59,8 +59,8 @@ def test_cost_model_states_its_formulas(metrics):
 
 
 def test_metrics_declare_which_phases_are_complete(metrics):
-    assert metrics["phases_complete"] == [1, 2, 3]
-    assert set(metrics["pending_phases"]) == {"4"}
+    assert metrics["phases_complete"] == [1, 2, 3, 4]
+    assert set(metrics["pending_phases"]) == {"5"}
 
 
 # --------------------------------------------------------------------------- #
@@ -229,3 +229,66 @@ def test_scenario_method_discloses_the_cost_to_serve_definition(metrics):
     assert "reproduces the baseline exactly" in sc["method"]
     assert "price of the goods is excluded" in sc["cost_to_serve_definition"]
     assert "percentage points" in sc["tariff_units"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 figures
+# --------------------------------------------------------------------------- #
+def test_agent_metrics_describe_the_llm_boundary(metrics):
+    ag = metrics["agent_recommendations"]
+    assert "re-running" in ag["method"] or "re-run" in ag["method"]
+    assert "Prose only" in ag["llm_role"]
+    assert "discarded" in ag["llm_role"]
+
+
+def test_agent_recommendations_are_priced(metrics):
+    ag = metrics["agent_recommendations"]
+    assert ag["recommendations"] > 0
+    assert ag["total_service_gain_pp"] > 0
+    assert ag["cheapest"]["cost_per_service_point"] <= ag["largest_service_gain"][
+        "cost_per_service_point"
+    ] or ag["cheapest"]["sku"] == ag["largest_service_gain"]["sku"]
+    assert set(ag["action_mix"]) <= {
+        "expedite_order", "rebalance_stock", "switch_supplier", "dual_source",
+        "adjust_order_qty", "no_action",
+    }
+
+
+def test_backtest_reports_service_improvement(metrics):
+    bt = metrics["backtest"]
+    d = bt["at_default_settings"]
+    assert d["supplyiq_fill_rate"] > d["current_fill_rate"]
+    assert d["stockout_weeks_avoided"] > 0
+    assert d["fill_rate_change_pp"] > 0
+
+
+def test_backtest_states_both_policies_plainly(metrics):
+    bt = metrics["backtest"]
+    assert "flat" in bt["current_policy"]
+    assert "naive" in bt["current_policy"]
+    assert "lead-time variability" in bt["supplyiq_policy"]
+    assert "same lead-time draws" in bt["method"]
+
+
+def test_equal_service_claim_excludes_non_comparable_points(metrics):
+    """The claim is only made over the range where both policies can operate."""
+    e = metrics["backtest"]["at_equal_service"]
+    assert e["comparable_points"] > 0
+    assert e["not_comparable_points"] > 0
+    assert e["capital_saving_pct_min"] > 0
+    assert "cannot be tuned that low" in e["note"]
+
+
+def test_backtest_records_the_zero_safety_stock_finding(metrics):
+    bt = metrics["backtest"]
+    assert "not the safety stock" in bt["key_finding"]
+    floor = min(bt["supplyiq_sweep"], key=lambda r: r["service_level"])
+    current = bt["at_default_settings"]["current_fill_rate"]
+    assert floor["safety_stock_units"] == 0
+    assert floor["fill_rate"] > current
+
+
+def test_both_policies_were_swept(metrics):
+    bt = metrics["backtest"]
+    assert len(bt["supplyiq_sweep"]) >= 8
+    assert len(bt["current_policy_sweep"]) >= 5
