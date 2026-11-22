@@ -1,6 +1,6 @@
 # SupplyIQ — Product Requirements
 
-**Status:** Phase 1 of 5. Sections marked _(Phase 5)_ are filled in once the modules they describe exist.
+**Status:** complete — all five modules built, tested and deployable.
 
 ---
 
@@ -97,6 +97,56 @@ against the naive baseline policy, on held-out weeks.
 - **Supplier scorecards** with contracted service levels and automated exception alerting.
 - **Persistent decision log** behind a real database, enabling decision-quality analysis over time.
 
----
+## 9. Screens
 
-_Charts and KPI definitions per screen: (Phase 5)._
+| Screen | Audience | What it answers |
+| --- | --- | --- |
+| **Control Tower** | Operations leader | Where does the network stand, what is at risk, what is being done, did it work? Carries the one-screen story: risk → scenario → action → impact. |
+| **Demand Forecast** | Demand planner | How accurate is the forecast, on which items is it unreliable, and what does next quarter look like? |
+| **Inventory Policy** | Inventory planner | What should each item's safety stock, reorder point and order quantity be, and what does a service-level target cost? |
+| **Supplier Performance** | Procurement manager | Which lanes are slow, which are erratic, and what working capital does each one force us to carry? |
+| **Scenario Planner** | All | If a supplier slips, demand spikes or a duty moves, which items break and by how much? |
+| **Planning Agent** | Inventory planner | For each at-risk item, what are the options, what does each cost, and what service does it buy? |
+| **Backtest Results** | Operations leader | Does this policy actually beat what we do today, like for like? |
+| **Data & Assumptions** | Anyone auditing it | Which numbers are real, which are simulated, and how do I reproduce them? |
+
+Every chart carries a one-line "how it's calculated" caption. A test asserts that each
+page has at least one.
+
+## 10. What the MVP found
+
+Results from the committed sample, all reproducible with `make metrics`:
+
+- **Forecasting.** ETS beats a seasonal-naive baseline by 9.0 pp of WAPE (0.550 → 0.461),
+  a 16% relative improvement, with near-zero bias. 22% of holdout weeks have zero sales,
+  so MAPE is reported second and its exclusions are disclosed.
+- **Inventory.** Accounting for lead-time variability adds 26.6% to total safety stock
+  versus a demand-only formula, concentrated on the long overseas lanes.
+- **Minimum order quantities, not policy, drive slow-mover stock.** 275 of 400 items order
+  at their supplier's MOQ, which is why C items sit above the coverage cap. The lever
+  there is renegotiating MOQs, not tuning service levels.
+- **Backtest.** +4.50 pp fill rate and 90% of stockout weeks avoided against a naive
+  flat-cover policy. At their default settings that costs 47% more working capital; at
+  **equal service** the SupplyIQ policy needs **22% less** (range 8.7–37.0%).
+- **The headline finding.** Driving the service level to 0.50 removes safety stock
+  entirely and the policy still beats the flat rule. The advantage is not the buffer — it
+  is reordering against each item's own lead time, which a flat weeks-of-cover rule
+  cannot express.
+
+## 11. Known limitations
+
+Stated here rather than discovered by a reviewer:
+
+- **Single echelon.** Store level only. Risk pooling across a DC tier would change the
+  safety-stock maths materially, and is the first item on the Phase 2 roadmap.
+- **A 12-week holdout has window edges.** Orders placed near the end arrive after it
+  closes. Cost to serve excludes the price of goods for exactly this reason, and the
+  action pricing credits back closing inventory — but a longer horizon would be cleaner.
+- **Dual sourcing is approximated** as a 50/50 blend of two lanes' lead time and freight.
+  A true two-lane model needs a second pipeline per item; the UI labels it an approximation.
+- **The decision log is not durable.** Streamlit Community Cloud resets its filesystem,
+  so approvals live in session state with a CSV export.
+- **Supplier and cost data are simulated.** Neither source dataset has a vendor dimension
+  or inbound lead times. Everything derived from them is labelled simulated throughout.
+- **One holdout, not rolling origin.** A rolling-origin evaluation would give a more
+  stable accuracy estimate than a single 12-week split.

@@ -109,3 +109,115 @@ def test_dev_requirements_include_the_modelling_libraries():
 def test_raw_data_is_gitignored():
     gitignore = (REPO_ROOT / ".gitignore").read_text()
     assert "data/raw/*" in gitignore
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5: the pages must actually contain their content, not just not crash
+# --------------------------------------------------------------------------- #
+EXPECTED_PAGES = {
+    "0_Control_Tower.py": "Control Tower",
+    "1_Demand_Forecast.py": "Demand Forecast",
+    "2_Inventory_Policy.py": "Inventory Policy",
+    "3_Supplier_Performance.py": "Supplier Performance",
+    "4_Scenario_Planner.py": "Scenario Planner",
+    "5_Planning_Agent.py": "Planning Agent",
+    "6_Backtest_Results.py": "Backtest Results",
+    "7_Data_and_Assumptions.py": "Data & Assumptions",
+}
+
+
+def test_every_expected_page_exists():
+    present = {p.name for p in PAGES}
+    assert present == set(EXPECTED_PAGES), present.symmetric_difference(EXPECTED_PAGES)
+
+
+def test_entry_point_declares_navigation():
+    """Without st.navigation the sidebar names pages after their filenames."""
+    source = ENTRY_POINT.read_text()
+    assert "st.navigation" in source
+    for filename in EXPECTED_PAGES:
+        assert filename in source, filename
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("filename,title", sorted(EXPECTED_PAGES.items()))
+def test_page_renders_its_title(filename: str, title: str, built: bool):
+    if not built:
+        pytest.skip("data/sample not built")
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / filename), default_timeout=90).run()
+    assert not at.exception, f"{filename} raised: {at.exception}"
+    headings = " ".join(h.value for h in at.title) + " ".join(m.value for m in at.markdown)
+    assert title.replace(" & ", " & ") in headings or title in headings, filename
+
+
+@pytest.mark.slow
+def test_scenario_planner_exposes_all_three_levers(built: bool):
+    if not built:
+        pytest.skip("data/sample not built")
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / "4_Scenario_Planner.py"),
+                           default_timeout=90).run()
+    assert not at.exception
+    labels = " ".join(s.label for s in at.slider)
+    assert "Supplier delay" in labels
+    assert "Demand change" in labels
+    assert "Tariff change" in labels
+
+
+@pytest.mark.slow
+def test_scenario_planner_opens_on_the_no_disruption_case(built: bool):
+    """Defaults must be the null scenario, matching the simulator guarantee."""
+    if not built:
+        pytest.skip("data/sample not built")
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / "4_Scenario_Planner.py"),
+                           default_timeout=90).run()
+    for slider in at.slider:
+        assert float(slider.value) == 0.0, slider.label
+    text = " ".join(i.value for i in at.info)
+    assert "reproduces the baseline exactly" in text
+
+
+@pytest.mark.slow
+def test_planning_agent_shows_the_demo_mode_badge(built: bool, monkeypatch):
+    if not built:
+        pytest.skip("data/sample not built")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / "5_Planning_Agent.py"),
+                           default_timeout=120).run()
+    assert not at.exception
+    text = " ".join(i.value for i in at.info)
+    assert "rule-based explanations" in text
+
+
+@pytest.mark.slow
+def test_planning_agent_warns_that_decisions_are_not_persisted(built: bool):
+    if not built:
+        pytest.skip("data/sample not built")
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / "5_Planning_Agent.py"),
+                           default_timeout=120).run()
+    text = " ".join(i.value for i in at.info)
+    assert "not permanent" in text
+
+
+@pytest.mark.slow
+def test_backtest_page_states_the_capital_increase_at_default_settings(built: bool):
+    """The unflattering number must be on the page, not only in the repo."""
+    if not built:
+        pytest.skip("data/sample not built")
+    at = AppTest.from_file(str(REPO_ROOT / "pages" / "6_Backtest_Results.py"),
+                           default_timeout=90).run()
+    assert not at.exception
+    warnings = " ".join(w.value for w in at.warning)
+    assert "more working capital" in warnings
+    assert "not by itself an achievement" in warnings
+
+
+@pytest.mark.slow
+def test_every_page_labels_the_data_origin(built: bool):
+    """A reviewer must never see a number without knowing if it is real."""
+    if not built:
+        pytest.skip("data/sample not built")
+    for filename in EXPECTED_PAGES:
+        at = AppTest.from_file(str(REPO_ROOT / "pages" / filename), default_timeout=90).run()
+        sidebar = " ".join(m.value for m in at.sidebar.markdown)
+        assert "Data origin" in sidebar, filename

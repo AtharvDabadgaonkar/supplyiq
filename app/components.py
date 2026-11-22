@@ -1,13 +1,16 @@
-"""UI pieces every page shares: caching, badges, captions, error handling.
+"""Shared Streamlit UI: cached loading, badges, captions, charts.
 
-All data loading goes through the cached helpers here so Streamlit Cloud reads
-each Parquet file once per session.
+Every page goes through the cached helpers here, so each Parquet file is read
+once per session. On the free Streamlit Community Cloud tier that is the
+difference between a snappy app and one that runs out of memory.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from supplyiq import paths
@@ -21,18 +24,36 @@ from supplyiq.data import (
     missing_tables,
     read_provenance,
 )
+from supplyiq.pipeline import ARTIFACTS, load_artifact, missing_artifacts
 from supplyiq.schemas import TABLES_BY_NAME
 
 PAGE_ICON = "🛳️"
 
+# Colour-blind safe, consistent across every page.
+COLORS = {
+    "primary": "#1f6feb",
+    "accent": "#e8710a",
+    "good": "#1a7f37",
+    "bad": "#cf222e",
+    "muted": "#8c959f",
+    "current": "#8c959f",
+    "supplyiq": "#1f6feb",
+}
+SEQUENCE = ["#1f6feb", "#e8710a", "#1a7f37", "#8250df", "#cf222e", "#9a6700"]
+
 
 def page_setup(title: str, icon: str = PAGE_ICON, wide: bool = True) -> None:
-    st.set_page_config(
-        page_title=f"SupplyIQ · {title}",
-        page_icon=icon,
-        layout="wide" if wide else "centered",
-        initial_sidebar_state="expanded",
-    )
+    """Set page config. Tolerant of being called under st.navigation."""
+    try:
+        st.set_page_config(
+            page_title=f"SupplyIQ · {title}",
+            page_icon=icon,
+            layout="wide" if wide else "centered",
+            initial_sidebar_state="expanded",
+        )
+    except Exception:
+        # Already configured by the entry point; harmless.
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -53,8 +74,21 @@ def get_provenance() -> Provenance | None:
 
 @st.cache_data(show_spinner="Loading data…")
 def get_table(name: str, columns: tuple[str, ...] | None = None) -> pd.DataFrame:
-    """Cached table read. `columns` is a tuple so it is hashable for the cache."""
     return load_table(name, columns=list(columns) if columns else None)
+
+
+@st.cache_data(show_spinner="Loading precomputed results…")
+def get_artifact(name: str, columns: tuple[str, ...] | None = None) -> pd.DataFrame:
+    return load_artifact(name, columns=list(columns) if columns else None)
+
+
+@st.cache_data(show_spinner=False)
+def get_metrics() -> dict[str, Any]:
+    import json
+
+    if not paths.METRICS_FILE.exists():
+        return {}
+    return json.loads(paths.METRICS_FILE.read_text())
 
 
 @st.cache_data(show_spinner=False)
@@ -66,11 +100,7 @@ def get_provider_status() -> dict[str, Any]:
 # Guards and badges
 # --------------------------------------------------------------------------- #
 def require_data() -> Provenance:
-    """Stop the page with a friendly message if the sample has not been built.
-
-    Streamlit Cloud resets the filesystem on redeploy, so a missing sample means
-    the Parquet files were not committed — never a crash traceback for the user.
-    """
+    """Stop with a friendly message rather than a traceback if data is missing."""
     if not is_built():
         st.error("#### Data not available")
         st.markdown(
@@ -89,12 +119,25 @@ def require_data() -> Provenance:
     return prov
 
 
-def data_badge(prov: Provenance) -> None:
-    """The real-vs-simulated label. Shown on every page, by design."""
+def require_artifacts(names: Iterable[str] = ()) -> None:
+    """Stop with a friendly message if `make metrics` has not been run."""
+    missing = missing_artifacts()
+    needed = [n for n in (names or ARTIFACTS) if n in missing]
+    if needed:
+        st.warning(
+            f"#### Precomputed results missing\n\nThis page needs "
+            f"`{'`, `'.join(needed)}`, which are built by `make metrics`."
+        )
+        st.code("make metrics", language="bash")
+        st.stop()
+
+
+def data_badge(prov: Provenance, compact: bool = False) -> None:
+    text = prov.badge if not compact else ("Real data" if prov.is_real else "Synthetic sample")
     if prov.is_real:
-        st.success(f"**Data:** {prov.badge}", icon="✅")
+        st.success(f"**Data:** {text}", icon="✅")
     else:
-        st.warning(f"**Data:** {prov.badge}", icon="⚠️")
+        st.warning(f"**Data:** {text}", icon="⚠️")
 
 
 def agent_badge() -> None:
@@ -106,17 +149,17 @@ def agent_badge() -> None:
 
 
 def how_calculated(text: str) -> None:
-    """The one-line 'how it's calculated' caption that every chart must carry."""
+    """Every chart carries one of these. No exceptions."""
     st.caption(f"**How it's calculated:** {text}")
 
 
-def simulated_note(fields: list[str] | tuple[str, ...]) -> None:
+def simulated_note(fields: Iterable[str]) -> None:
+    fields = list(fields)
     if fields:
-        st.caption(f"⚠️ Simulated fields on this view: `{'`, `'.join(fields)}`")
+        st.caption(f"⚠️ Simulated inputs on this view: `{'`, `'.join(fields)}`")
 
 
 def sidebar_context() -> Provenance:
-    """Shared sidebar: provenance, agent mode, sample scope."""
     prov = require_data()
     a = get_assumptions()
     with st.sidebar:
@@ -140,7 +183,6 @@ def sidebar_context() -> Provenance:
 
 
 def table_summary() -> pd.DataFrame:
-    """Row counts and file sizes for the data health view."""
     rows = []
     for name, spec in TABLES_BY_NAME.items():
         path = paths.SAMPLE_DIR / spec.filename
@@ -156,3 +198,68 @@ def table_summary() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------- #
+# Charts
+# --------------------------------------------------------------------------- #
+def style(fig: go.Figure, height: int = 340, legend: bool = True) -> go.Figure:
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=30, b=10),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=legend,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title=None),
+        colorway=SEQUENCE,
+        hovermode="x unified",
+    )
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(gridcolor="rgba(140,149,159,0.2)", zeroline=False)
+    return fig
+
+
+def show(fig: go.Figure, height: int = 340, legend: bool = True) -> None:
+    st.plotly_chart(style(fig, height, legend), use_container_width=True)
+
+
+def kpi_row(tiles: list[dict[str, Any]], columns: int | None = None) -> None:
+    """KPI tiles. `delta_good` flags whether an increase is good or bad."""
+    cols = st.columns(columns or len(tiles))
+    for col, tile in zip(cols, tiles):
+        delta = tile.get("delta")
+        col.metric(
+            tile["label"],
+            tile["value"],
+            delta=delta,
+            delta_color=tile.get("delta_color", "normal"),
+            help=tile.get("help"),
+        )
+
+
+def bar(df: pd.DataFrame, x: str, y: str, color: str | None = None, **kw) -> go.Figure:
+    return px.bar(df, x=x, y=y, color=color, **kw)
+
+
+def delta_or_none(value: float, text: str, tolerance: float = 1e-9) -> str | None:
+    """Suppress a delta that is exactly zero.
+
+    Streamlit renders `delta=0` as a green upward arrow, which reads as an
+    improvement when nothing changed -- actively misleading on the zero-
+    disruption scenario, where nothing changing is the whole point.
+    """
+    return None if abs(float(value)) < tolerance else text
+
+
+def pct(value: float, digits: int = 1) -> str:
+    return f"{value:.{digits}%}"
+
+
+def money(value: float, digits: int = 0) -> str:
+    sign = "-" if value < 0 else ""
+    v = abs(float(value))
+    if v >= 1_000_000:
+        return f"{sign}${v / 1e6:.2f}M"
+    if v >= 10_000:
+        return f"{sign}${v / 1e3:,.0f}k"
+    return f"{sign}${v:,.{digits}f}"
