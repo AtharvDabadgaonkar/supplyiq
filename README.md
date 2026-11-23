@@ -6,7 +6,7 @@ trade is made on instinct. SupplyIQ makes it explicit: it forecasts demand, sets
 per SKU, simulates a disruption, prices each possible response, and shows what service and working
 capital you get for the money.
 
-**Live demo:** 
+**▶️ Live demo:** 
 
 <https://supplyiq-duzke3qfc7dgxvc4mvrcck.streamlit.app/>
 
